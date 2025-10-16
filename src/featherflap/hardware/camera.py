@@ -7,6 +7,19 @@ from contextlib import contextmanager
 from typing import Generator, Optional
 
 
+DEFAULT_DEVICE_INDEX = 0
+DEFAULT_FRAME_WIDTH = 640
+DEFAULT_FRAME_HEIGHT = 480
+DEFAULT_JPEG_QUALITY = 80
+DEFAULT_STREAM_JPEG_QUALITY = 75
+JPEG_QUALITY_MIN = 10
+JPEG_QUALITY_MAX = 95
+STREAM_QUALITY_MAX = 90
+MIN_STREAM_FPS = 1.0
+DEFAULT_STREAM_FPS = 10.0
+FRAME_INTERVAL_BASE_SECONDS = 1.0
+
+
 class CameraUnavailable(RuntimeError):
     """Raised when OpenCV or the camera device cannot be opened."""
 
@@ -38,10 +51,10 @@ def _open_capture(device: int | str, width: Optional[int], height: Optional[int]
 
 
 def capture_jpeg_frame(
-    device: int | str = 0,
-    width: Optional[int] = 640,
-    height: Optional[int] = 480,
-    quality: int = 80,
+    device: int | str = DEFAULT_DEVICE_INDEX,
+    width: Optional[int] = DEFAULT_FRAME_WIDTH,
+    height: Optional[int] = DEFAULT_FRAME_HEIGHT,
+    quality: int = DEFAULT_JPEG_QUALITY,
 ) -> bytes:
     """Capture a single frame and return it as JPEG bytes."""
 
@@ -50,7 +63,10 @@ def capture_jpeg_frame(
         if not ok or frame is None:
             raise CameraUnavailable("Camera opened but did not deliver a frame.")
         cv2 = _ensure_cv2()
-        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(max(10, min(95, quality)))]
+        encode_params = [
+            int(cv2.IMWRITE_JPEG_QUALITY),
+            int(max(JPEG_QUALITY_MIN, min(JPEG_QUALITY_MAX, quality))),
+        ]
         success, encoded = cv2.imencode(".jpg", frame, encode_params)
         if not success:
             raise CameraUnavailable("Failed to encode camera frame as JPEG.")
@@ -58,18 +74,21 @@ def capture_jpeg_frame(
 
 
 def mjpeg_stream(
-    device: int | str = 0,
-    width: Optional[int] = 640,
-    height: Optional[int] = 480,
-    fps: float = 10.0,
-    quality: int = 75,
+    device: int | str = DEFAULT_DEVICE_INDEX,
+    width: Optional[int] = DEFAULT_FRAME_WIDTH,
+    height: Optional[int] = DEFAULT_FRAME_HEIGHT,
+    fps: float = DEFAULT_STREAM_FPS,
+    quality: int = DEFAULT_STREAM_JPEG_QUALITY,
 ) -> Generator[bytes, None, None]:
     """Yield multipart MJPEG frames suitable for a StreamingResponse."""
 
-    frame_interval = 1.0 / max(1.0, fps)
+    frame_interval = FRAME_INTERVAL_BASE_SECONDS / max(MIN_STREAM_FPS, fps)
     with _open_capture(device, width, height) as capture:
         cv2 = _ensure_cv2()
-        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(max(10, min(90, quality)))]
+        encode_params = [
+            int(cv2.IMWRITE_JPEG_QUALITY),
+            int(max(JPEG_QUALITY_MIN, min(STREAM_QUALITY_MAX, quality))),
+        ]
         while True:
             start = time.monotonic()
             ok, frame = capture.read()

@@ -7,14 +7,40 @@ import platform
 import socket
 import time
 from contextlib import suppress
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
-from ..config import get_settings
+from ..config import (
+    DEFAULT_CAMERA_DEVICE_INDEX,
+    DEFAULT_UPTIME_I2C_ADDRESSES,
+    get_settings,
+)
 from .base import HardwareStatus, HardwareTest, HardwareTestResult
 from .camera import CameraUnavailable, capture_jpeg_frame
 from .i2c import SMBusNotAvailable, has_smbus, open_bus
 from .power import read_ups
 from .sensors import read_environment
+
+
+SMBUS_COMPONENT_I2C = "I2C"
+SMBUS_COMPONENT_UPS = "UPS"
+SMBUS_COMPONENT_ENVIRONMENTAL = "environmental"
+SMBUS_SKIP_MESSAGE_TEMPLATE = "smbus/smbus2 not installed – skipping {component} diagnostics."
+PICAMERA_SKIP_MESSAGE = "picamera2 not available – skipping CSI camera test."
+PIR_SKIP_MESSAGE = "RPi.GPIO not available – skipping PIR diagnostics."
+RGB_LED_SKIP_MESSAGE = "RPi.GPIO not available – skipping RGB LED test."
+RGB_LED_TOGGLE_DELAY_SECONDS = 0.15
+
+
+def _skipped_result(test: HardwareTest, summary: str, details: Optional[Dict[str, object]] = None) -> HardwareTestResult:
+    """Return a standardised skipped result for dependency issues."""
+
+    return HardwareTestResult(
+        id=test.id,
+        name=test.name,
+        status=HardwareStatus.SKIPPED,
+        summary=summary,
+        details=details or {},
+    )
 
 
 class SystemInfoTest(HardwareTest):
@@ -49,11 +75,9 @@ class I2CBusTest(HardwareTest):
     def run(self) -> HardwareTestResult:
         settings = get_settings()
         if not has_smbus():
-            return HardwareTestResult(
-                id=self.id,
-                name=self.name,
-                status=HardwareStatus.SKIPPED,
-                summary="smbus/smbus2 not installed – skipping I2C diagnostics.",
+            return _skipped_result(
+                self,
+                SMBUS_SKIP_MESSAGE_TEMPLATE.format(component=SMBUS_COMPONENT_I2C),
             )
         try:
             with open_bus(settings.i2c_bus_id):
@@ -67,11 +91,9 @@ class I2CBusTest(HardwareTest):
                 details={"error": str(exc)},
             )
         except SMBusNotAvailable:
-            return HardwareTestResult(
-                id=self.id,
-                name=self.name,
-                status=HardwareStatus.SKIPPED,
-                summary="smbus/smbus2 not installed – skipping I2C diagnostics.",
+            return _skipped_result(
+                self,
+                SMBUS_SKIP_MESSAGE_TEMPLATE.format(component=SMBUS_COMPONENT_I2C),
             )
         except Exception as exc:  # pragma: no cover - defensive
             return HardwareTestResult(
@@ -98,11 +120,9 @@ class PiZUpTimeTest(HardwareTest):
     def run(self) -> HardwareTestResult:
         settings = get_settings()
         if not has_smbus():
-            return HardwareTestResult(
-                id=self.id,
-                name=self.name,
-                status=HardwareStatus.SKIPPED,
-                summary="smbus/smbus2 not installed – skipping UPS diagnostics.",
+            return _skipped_result(
+                self,
+                SMBUS_SKIP_MESSAGE_TEMPLATE.format(component=SMBUS_COMPONENT_UPS),
             )
 
         addresses: List[int] = list(settings.uptime_i2c_addresses or [])
@@ -111,15 +131,13 @@ class PiZUpTimeTest(HardwareTest):
             with suppress(ValueError):
                 addresses.insert(0, int(env_addr, 0))
         if not addresses:
-            addresses = [0x48, 0x49, 0x4B]
+            addresses = list(DEFAULT_UPTIME_I2C_ADDRESSES)
         try:
             readings = read_ups(settings.i2c_bus_id, addresses)
         except SMBusNotAvailable:
-            return HardwareTestResult(
-                id=self.id,
-                name=self.name,
-                status=HardwareStatus.SKIPPED,
-                summary="smbus/smbus2 not installed – skipping UPS diagnostics.",
+            return _skipped_result(
+                self,
+                SMBUS_SKIP_MESSAGE_TEMPLATE.format(component=SMBUS_COMPONENT_UPS),
             )
         except RuntimeError as exc:
             return HardwareTestResult(
@@ -147,11 +165,9 @@ class EnvironmentalSensorTest(HardwareTest):
     def run(self) -> HardwareTestResult:
         settings = get_settings()
         if not has_smbus():
-            return HardwareTestResult(
-                id=self.id,
-                name=self.name,
-                status=HardwareStatus.SKIPPED,
-                summary="smbus/smbus2 not installed – skipping environmental diagnostics.",
+            return _skipped_result(
+                self,
+                SMBUS_SKIP_MESSAGE_TEMPLATE.format(component=SMBUS_COMPONENT_ENVIRONMENTAL),
             )
         try:
             snapshot = read_environment(
@@ -160,11 +176,9 @@ class EnvironmentalSensorTest(HardwareTest):
                 settings.bmp280_i2c_address,
             )
         except SMBusNotAvailable:
-            return HardwareTestResult(
-                id=self.id,
-                name=self.name,
-                status=HardwareStatus.SKIPPED,
-                summary="smbus/smbus2 not installed – skipping environmental diagnostics.",
+            return _skipped_result(
+                self,
+                SMBUS_SKIP_MESSAGE_TEMPLATE.format(component=SMBUS_COMPONENT_ENVIRONMENTAL),
             )
         except RuntimeError as exc:
             return HardwareTestResult(
@@ -210,12 +224,7 @@ class PicameraTest(HardwareTest):
         try:
             from picamera2 import Picamera2  # type: ignore
         except ImportError:
-            return HardwareTestResult(
-                id=self.id,
-                name=self.name,
-                status=HardwareStatus.SKIPPED,
-                summary="picamera2 not available – skipping CSI camera test.",
-            )
+            return _skipped_result(self, PICAMERA_SKIP_MESSAGE)
         try:
             camera = Picamera2()
             camera.close()
@@ -243,16 +252,11 @@ class UsbCameraTest(HardwareTest):
 
     def run(self) -> HardwareTestResult:
         settings = get_settings()
-        device_index = settings.camera_device if settings.camera_device is not None else 0
+        device_index = settings.camera_device if settings.camera_device is not None else DEFAULT_CAMERA_DEVICE_INDEX
         try:
             frame = capture_jpeg_frame(device_index)
         except CameraUnavailable as exc:
-            return HardwareTestResult(
-                id=self.id,
-                name=self.name,
-                status=HardwareStatus.SKIPPED,
-                summary=str(exc),
-            )
+            return _skipped_result(self, str(exc))
         except Exception as exc:  # pragma: no cover - defensive
             return HardwareTestResult(
                 id=self.id,
@@ -279,12 +283,7 @@ class PIRSensorTest(HardwareTest):
         try:
             import RPi.GPIO as GPIO  # type: ignore
         except ImportError:
-            return HardwareTestResult(
-                id=self.id,
-                name=self.name,
-                status=HardwareStatus.SKIPPED,
-                summary="RPi.GPIO not available – skipping PIR diagnostics.",
-            )
+            return _skipped_result(self, PIR_SKIP_MESSAGE)
 
         settings = get_settings()
         pins = settings.pir_pins
@@ -327,12 +326,7 @@ class RGBLedTest(HardwareTest):
         try:
             import RPi.GPIO as GPIO  # type: ignore
         except ImportError:
-            return HardwareTestResult(
-                id=self.id,
-                name=self.name,
-                status=HardwareStatus.SKIPPED,
-                summary="RPi.GPIO not available – skipping RGB LED test.",
-            )
+            return _skipped_result(self, RGB_LED_SKIP_MESSAGE)
 
         settings = get_settings()
         pins = settings.rgb_led_pins
@@ -343,7 +337,7 @@ class RGBLedTest(HardwareTest):
                 GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
             for pin in pins:
                 GPIO.output(pin, GPIO.HIGH)
-                time.sleep(0.15)
+                time.sleep(RGB_LED_TOGGLE_DELAY_SECONDS)
                 GPIO.output(pin, GPIO.LOW)
         except Exception as exc:
             return HardwareTestResult(

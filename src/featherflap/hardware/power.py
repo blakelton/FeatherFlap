@@ -16,6 +16,16 @@ ADC_CHANNEL_BITS = {
 }
 ADC_MAX_READING = 2047.0
 ADC_VREF = 6.144
+CONFIG_REGISTER = 0x01
+CONVERSION_REGISTER = 0x00
+WORD_LOW_MASK = 0xFF
+WORD_HIGH_MASK = 0xFFF0
+WORD_LOW_SHIFT = 8
+WORD_HIGH_SHIFT = 8
+CONVERSION_RESULT_SHIFT = 4
+CHANNEL_SETTLE_SECONDS = 0.003
+TEMPERATURE_OFFSET_VOLTAGE = 4.0
+TEMPERATURE_SCALE = 0.0432
 
 
 @dataclass
@@ -39,14 +49,15 @@ class UPSReadings:
 
 
 def _read_channel_values(bus, address: int) -> Dict[str, float]:
-    CONFIG_REG = 0x01
-    CONVERSION_REG = 0x00
     values: Dict[str, float] = {}
     for name, cfg in ADC_CHANNEL_BITS.items():
-        bus.write_byte_data(address, CONFIG_REG, cfg)
-        time.sleep(0.003)
-        raw = bus.read_word_data(address, CONVERSION_REG)
-        scaled = (((raw & 0xFF) << 8) | ((raw & 0xFFF0) >> 8)) >> 4
+        bus.write_byte_data(address, CONFIG_REGISTER, cfg)
+        time.sleep(CHANNEL_SETTLE_SECONDS)
+        raw = bus.read_word_data(address, CONVERSION_REGISTER)
+        scaled = (
+            ((raw & WORD_LOW_MASK) << WORD_LOW_SHIFT)
+            | ((raw & WORD_HIGH_MASK) >> WORD_HIGH_SHIFT)
+        ) >> CONVERSION_RESULT_SHIFT
         voltage = (scaled / ADC_MAX_READING) * ADC_VREF
         values[name] = voltage
     return values
@@ -66,7 +77,7 @@ def read_ups(bus_id: int, addresses: Iterable[int]) -> UPSReadings:
                     values = _read_channel_values(bus, address)
                 except OSError:
                     continue
-                temp_c = (4.0 - values["temp"]) / 0.0432
+                temp_c = (TEMPERATURE_OFFSET_VOLTAGE - values["temp"]) / TEMPERATURE_SCALE
                 return UPSReadings(
                     address=address,
                     vin=values["vin"],

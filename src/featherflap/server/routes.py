@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from starlette.concurrency import iterate_in_threadpool
 
-from ..config import get_settings
+from ..config import DEFAULT_CAMERA_DEVICE_INDEX, DEFAULT_UPTIME_I2C_ADDRESSES, get_settings
 from ..hardware import (
     CameraUnavailable,
     HardwareStatus,
@@ -24,6 +24,12 @@ from ..hardware.i2c import SMBusNotAvailable
 
 router = APIRouter()
 
+STATUS_PRIORITY = {
+    HardwareStatus.ERROR.value: 3,
+    HardwareStatus.WARNING.value: 2,
+    HardwareStatus.SKIPPED.value: 1,
+    HardwareStatus.OK.value: 0,
+}
 
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -188,19 +194,13 @@ def _resolve_ups_addresses(settings) -> List[int]:
         except ValueError:
             pass
     if not addresses:
-        addresses = [0x48, 0x49, 0x4B]
+        addresses = list(DEFAULT_UPTIME_I2C_ADDRESSES)
     return list(dict.fromkeys(addresses))
 
 
 def _aggregate_status(results: List[Dict[str, str]]) -> str:
-    priority = {
-        HardwareStatus.ERROR.value: 3,
-        HardwareStatus.WARNING.value: 2,
-        HardwareStatus.SKIPPED.value: 1,
-        HardwareStatus.OK.value: 0,
-    }
-    highest = max((priority.get(result["status"], 0) for result in results), default=0)
-    for status, score in priority.items():
+    highest = max((STATUS_PRIORITY.get(result["status"], 0) for result in results), default=0)
+    for status, score in STATUS_PRIORITY.items():
         if score == highest:
             return status
     return HardwareStatus.OK.value
@@ -266,7 +266,7 @@ async def camera_frame() -> Response:
     """Capture a single JPEG frame from the USB camera."""
 
     settings = get_settings()
-    device = settings.camera_device if settings.camera_device is not None else 0
+    device = settings.camera_device if settings.camera_device is not None else DEFAULT_CAMERA_DEVICE_INDEX
     try:
         frame = await asyncio.to_thread(capture_jpeg_frame, device)
     except CameraUnavailable as exc:
@@ -279,7 +279,7 @@ async def camera_stream() -> StreamingResponse:
     """Stream MJPEG frames from the USB camera."""
 
     settings = get_settings()
-    device = settings.camera_device if settings.camera_device is not None else 0
+    device = settings.camera_device if settings.camera_device is not None else DEFAULT_CAMERA_DEVICE_INDEX
     try:
         generator = mjpeg_stream(device)
     except CameraUnavailable as exc:
