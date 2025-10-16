@@ -108,6 +108,18 @@ The command above launches Uvicorn via the packaged CLI. By default it reads env
 - `FEATHERFLAP_AHT20_I2C_ADDRESS` – AHT20 humidity/temperature sensor address (default `0x38`).
 - `FEATHERFLAP_BMP280_I2C_ADDRESS` – BMP280 barometric pressure sensor address (default `0x76`).
 - `FEATHERFLAP_PIR_PINS` and `FEATHERFLAP_RGB_LED_PINS` – BCM pin configuration for motion sensors and the RGB LED.
+- `FEATHERFLAP_LOG_ERROR_ENABLED`, `FEATHERFLAP_LOG_WARNING_ENABLED`, `FEATHERFLAP_LOG_INFO_ENABLED`, `FEATHERFLAP_LOG_DEBUG_ENABLED` – toggle individual logging categories (errors, warnings, information, debug). Errors, warnings, and information logs are enabled by default; debug logs are opt-in.
+
+Logs are emitted through a central `featherflap` logger and written to standard error with timestamps. Enable or disable each category independently by setting the flags above to `true`/`false`. For example, `FEATHERFLAP_LOG_DEBUG_ENABLED=true` surfaces fine-grained diagnostic messages without altering the other categories.
+
+### Logging
+
+FeatherFlap initialises a single namespaced logger (`featherflap`) that all components share:
+
+- The CLI and FastAPI factory configure the logger automatically, so running `featherflap serve` immediately produces timestamped logs on stderr.
+- Change verbosity at runtime through the `FEATHERFLAP_LOG_*_ENABLED` flags. Set a flag to `false` to suppress that level or `true` to enable it; errors, warnings, and informational messages default to `true`, while debug starts disabled.
+- Debug mode (`FEATHERFLAP_LOG_DEBUG_ENABLED=true`) reveals granular traces for I²C access, camera streaming, and test execution. This is ideal for troubleshooting but can emit a lot of output—especially when MJPEG streaming runs continuously—so leave it off unless needed.
+- When embedding the diagnostics stack elsewhere, call `featherflap.logger.get_logger("your.module")` to obtain a scoped child logger and stay inside the unified logging tree.
 
 Visit `http://<raspberry-pi-ip>:8000/` in a browser on the same network to access the dashboard. Each test streams its results back to the page and displays structured diagnostics.
 

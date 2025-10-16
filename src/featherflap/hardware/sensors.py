@@ -6,7 +6,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
+from ..logger import get_logger
 from .i2c import SMBusNotAvailable, open_bus
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -36,6 +39,7 @@ class BMP280:
         self._bus.write_byte_data(self._address, self.CONFIG, 0xA0)
         # Store oversampling configuration (x1 for temp/pressure, sleep mode).
         self._ctrl_meas = 0x24
+        logger.debug("Initialised BMP280 driver at address 0x%X", address)
 
     def _load_calibration(self):
         data = self._bus.read_i2c_block_data(self._address, self.CALIB_START, 24)
@@ -97,6 +101,7 @@ class BMP280:
         adc_T = (data[3] << 12) | (data[4] << 4) | (data[5] >> 4)
         temperature_c, t_fine = self._compensate_temperature(adc_T)
         pressure_pa = self._compensate_pressure(adc_P, t_fine)
+        logger.debug("BMP280 reading: temperature=%0.2fC pressure=%0.2fhPa", temperature_c, pressure_pa / 100.0)
         return temperature_c, pressure_pa / 100.0
 
 
@@ -110,6 +115,7 @@ class AHT20:
         time.sleep(0.02)
         self._bus.write_i2c_block_data(self._address, 0xBE, [0x08, 0x00])
         time.sleep(0.01)
+        logger.debug("Initialised AHT20 driver at address 0x%X", address)
 
     def read(self) -> Tuple[float, float]:
         self._bus.write_i2c_block_data(self._address, 0xAC, [0x33, 0x00])
@@ -123,6 +129,7 @@ class AHT20:
             raw_temperature = (((data[3] & 0x0F) << 16) | (data[4] << 8) | data[5]) & 0xFFFFF
             humidity = (raw_humidity / 1048576.0) * 100.0
             temperature = (raw_temperature / 1048576.0) * 200.0 - 50.0
+            logger.debug("AHT20 reading: temperature=%0.2fC humidity=%0.2f%%", temperature, humidity)
             return temperature, humidity
         raise RuntimeError("AHT20 sensor timeout waiting for data readiness.")
 
@@ -131,6 +138,12 @@ def read_environment(bus_id: int, aht20_address: int, bmp280_address: int) -> En
     """Read the temperature, humidity and pressure sensors."""
 
     snapshot = EnvironmentSnapshot()
+    logger.debug(
+        "Reading environment sensors on bus %s (AHT20=0x%X BMP280=0x%X)",
+        bus_id,
+        aht20_address,
+        bmp280_address,
+    )
     try:
         with open_bus(bus_id) as bus:
             try:
@@ -142,6 +155,7 @@ def read_environment(bus_id: int, aht20_address: int, bmp280_address: int) -> En
                 }
             except Exception as exc:
                 snapshot.errors["aht20"] = str(exc)
+                logger.warning("AHT20 read failed: %s", exc)
             try:
                 bmp280 = BMP280(bus, bmp280_address)
                 temp_c, pressure_hpa = bmp280.read()
@@ -151,8 +165,16 @@ def read_environment(bus_id: int, aht20_address: int, bmp280_address: int) -> En
                 }
             except Exception as exc:
                 snapshot.errors["bmp280"] = str(exc)
+                logger.warning("BMP280 read failed: %s", exc)
     except SMBusNotAvailable:
+        logger.warning("SMBus not available when reading environment sensors")
         raise
     except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Unexpected error during environment read: %s", exc)
         raise RuntimeError(f"Unexpected error reading environment sensors: {exc}") from exc
+    logger.info(
+        "Environment read complete (results=%d errors=%d)",
+        len(snapshot.results),
+        len(snapshot.errors),
+    )
     return snapshot

@@ -8,6 +8,7 @@ import typer
 import uvicorn
 
 from ..config import get_settings
+from ..logger import configure_logging, get_logger
 
 app = typer.Typer(add_completion=False, help="FeatherFlap diagnostics tooling.")
 
@@ -22,6 +23,23 @@ def serve(
     """Start the diagnostics API server."""
 
     settings = get_settings()
+    configure_logging(settings)
+    logger = get_logger(__name__)
+    bound_host = host or settings.host
+    bound_port = port or settings.port
+    logger.info(
+        "Starting FeatherFlap diagnostics server (host=%s port=%s reload=%s)",
+        bound_host,
+        bound_port,
+        reload if reload is not None else settings.reload,
+    )
+    logger.debug(
+        "Logging toggles - error=%s warning=%s info=%s debug=%s",
+        settings.log_error_enabled,
+        settings.log_warning_enabled,
+        settings.log_info_enabled,
+        settings.log_debug_enabled,
+    )
     uvicorn.run(
         "featherflap.server.app:create_application",
         factory=True,
@@ -35,4 +53,6 @@ def serve(
 def main() -> None:
     """Entrypoint for the ``featherflap`` console script."""
 
+    logger = get_logger(__name__)
+    logger.debug("Invoked FeatherFlap CLI entrypoint")
     app()

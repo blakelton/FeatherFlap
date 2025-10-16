@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
+from ..logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class HardwareStatus(str, Enum):
     """Standard result categories used throughout diagnostics."""
@@ -29,13 +33,15 @@ class HardwareTestResult:
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON-serialisable representation of the result."""
 
-        return {
+        payload = {
             "id": self.id,
             "name": self.name,
             "status": self.status.value,
             "summary": self.summary,
             "details": self.details,
         }
+        logger.debug("Serialised HardwareTestResult: %s", payload)
+        return payload
 
 
 class HardwareTest:
@@ -54,9 +60,11 @@ class HardwareTest:
     def to_metadata(self) -> Dict[str, Optional[str]]:
         """Return metadata describing the test."""
 
-        return {
+        metadata = {
             "id": self.id,
             "name": self.name,
             "description": self.description,
             "category": self.category,
         }
+        logger.debug("Serialised HardwareTest metadata: %s", metadata)
+        return metadata

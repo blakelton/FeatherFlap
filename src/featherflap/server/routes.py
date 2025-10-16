@@ -21,8 +21,10 @@ from ..hardware import (
     read_ups,
 )
 from ..hardware.i2c import SMBusNotAvailable
+from ..logger import get_logger
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 STATUS_PRIORITY = {
     HardwareStatus.ERROR.value: 3,
@@ -181,7 +183,9 @@ def get_registry(request: Request) -> HardwareTestRegistry:
 
     registry = getattr(request.app.state, "registry", None)
     if registry is None:
+        logger.error("Hardware registry not initialised on application state")
         raise RuntimeError("Hardware registry not initialised.")
+    logger.debug("Retrieved hardware registry with %d tests", len(registry.tests))
     return registry
 
 
@@ -192,10 +196,13 @@ def _resolve_ups_addresses(settings) -> List[int]:
         try:
             addresses.insert(0, int(env_override, 0))
         except ValueError:
+            logger.warning("Ignoring invalid UPTIME_I2C_ADDR override: %s", env_override)
             pass
     if not addresses:
         addresses = list(DEFAULT_UPTIME_I2C_ADDRESSES)
-    return list(dict.fromkeys(addresses))
+    resolved = list(dict.fromkeys(addresses))
+    logger.debug("Resolved UPS addresses: %s", [hex(addr) for addr in resolved])
+    return resolved
 
 
 def _aggregate_status(results: List[Dict[str, str]]) -> str:
@@ -210,6 +217,7 @@ def _aggregate_status(results: List[Dict[str, str]]) -> str:
 async def dashboard() -> HTMLResponse:
     """Serve the HTML dashboard."""
 
+    logger.debug("Serving dashboard HTML")
     return HTMLResponse(content=DASHBOARD_HTML)
 
 
@@ -217,7 +225,9 @@ async def dashboard() -> HTMLResponse:
 async def list_tests(registry: HardwareTestRegistry = Depends(get_registry)) -> List[Dict[str, str]]:
     """Return metadata about available hardware diagnostics."""
 
-    return registry.list_tests()
+    tests = registry.list_tests()
+    logger.debug("Listing %d diagnostic tests", len(tests))
+    return tests
 
 
 @router.get("/api/status/environment")
@@ -225,6 +235,7 @@ async def environment_status() -> Dict[str, object]:
     """Return a snapshot of the environmental sensors."""
 
     settings = get_settings()
+    logger.debug("Requesting environment snapshot (bus=%s)", settings.i2c_bus_id)
     try:
         snapshot = await asyncio.to_thread(
             read_environment,
@@ -233,8 +244,10 @@ async def environment_status() -> Dict[str, object]:
             settings.bmp280_i2c_address,
         )
     except SMBusNotAvailable as exc:
+        logger.warning("SMBus not available for environment snapshot: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except RuntimeError as exc:
+        logger.error("Environment snapshot raised runtime error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     if snapshot.errors and not snapshot.results:
@@ -243,6 +256,12 @@ async def environment_status() -> Dict[str, object]:
         status = HardwareStatus.WARNING.value
     else:
         status = HardwareStatus.OK.value
+    logger.info(
+        "Environment snapshot completed with status=%s (results=%d errors=%d)",
+        status,
+        len(snapshot.results),
+        len(snapshot.errors),
+    )
     return {"status": status, "results": snapshot.results, "errors": snapshot.errors}
 
 
@@ -252,12 +271,16 @@ async def ups_status() -> Dict[str, object]:
 
     settings = get_settings()
     addresses = _resolve_ups_addresses(settings)
+    logger.debug("Querying UPS telemetry on bus=%s addresses=%s", settings.i2c_bus_id, [hex(a) for a in addresses])
     try:
         readings = await asyncio.to_thread(read_ups, settings.i2c_bus_id, addresses)
     except SMBusNotAvailable as exc:
+        logger.warning("SMBus not available for UPS telemetry: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except RuntimeError as exc:
+        logger.error("UPS telemetry read failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    logger.info("UPS telemetry read succeeded at address %s", readings.to_dict().get("address"))
     return {"status": HardwareStatus.OK.value, "readings": readings.to_dict()}
 
 
@@ -267,10 +290,13 @@ async def camera_frame() -> Response:
 
     settings = get_settings()
     device = settings.camera_device if settings.camera_device is not None else DEFAULT_CAMERA_DEVICE_INDEX
+    logger.debug("Capturing single camera frame from device %s", device)
     try:
         frame = await asyncio.to_thread(capture_jpeg_frame, device)
     except CameraUnavailable as exc:
+        logger.warning("USB camera unavailable for single frame capture: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    logger.info("Captured %d bytes from USB camera", len(frame))
     return Response(content=frame, media_type="image/jpeg")
 
 
@@ -280,10 +306,13 @@ async def camera_stream() -> StreamingResponse:
 
     settings = get_settings()
     device = settings.camera_device if settings.camera_device is not None else DEFAULT_CAMERA_DEVICE_INDEX
+    logger.debug("Opening camera stream for device %s", device)
     try:
         generator = mjpeg_stream(device)
     except CameraUnavailable as exc:
+        logger.warning("USB camera unavailable for streaming: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    logger.info("USB camera stream initialised for device %s", device)
     return StreamingResponse(
         iterate_in_threadpool(generator),
         media_type="multipart/x-mixed-replace; boundary=frame",
@@ -296,6 +325,7 @@ async def run_all_tests(registry: HardwareTestRegistry = Depends(get_registry)) 
 
     results = await asyncio.to_thread(registry.run_all)
     payload = [result.to_dict() for result in results]
+    logger.info("Executed full diagnostic suite (%d tests)", len(payload))
     return {
         "overall_status": _aggregate_status(payload),
         "results": payload,
@@ -312,5 +342,7 @@ async def run_single_test(
     try:
         result = await asyncio.to_thread(registry.run_test, test_id)
     except KeyError as exc:
+        logger.error("Requested diagnostic does not exist: %s", test_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logger.info("Executed diagnostic '%s' with status %s", test_id, result.status.value)
     return {"result": result.to_dict()}

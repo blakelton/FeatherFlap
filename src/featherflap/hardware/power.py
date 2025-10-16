@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List
 
+from ..logger import get_logger
 from .i2c import SMBusNotAvailable, open_bus
 
 ADC_CHANNEL_BITS = {
@@ -26,6 +27,8 @@ CONVERSION_RESULT_SHIFT = 4
 CHANNEL_SETTLE_SECONDS = 0.003
 TEMPERATURE_OFFSET_VOLTAGE = 4.0
 TEMPERATURE_SCALE = 0.0432
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -60,6 +63,7 @@ def _read_channel_values(bus, address: int) -> Dict[str, float]:
         ) >> CONVERSION_RESULT_SHIFT
         voltage = (scaled / ADC_MAX_READING) * ADC_VREF
         values[name] = voltage
+    logger.debug("Raw UPS ADC values at address %s: %s", hex(address), values)
     return values
 
 
@@ -68,16 +72,20 @@ def read_ups(bus_id: int, addresses: Iterable[int]) -> UPSReadings:
 
     address_attempts: List[int] = list(dict.fromkeys(addresses))
     if not address_attempts:
+        logger.error("UPS read requested without addresses")
         raise ValueError("At least one UPS I²C address must be provided.")
 
+    logger.debug("Attempting UPS read on bus %s for addresses %s", bus_id, [hex(addr) for addr in address_attempts])
     try:
         with open_bus(bus_id) as bus:
             for address in address_attempts:
                 try:
                     values = _read_channel_values(bus, address)
-                except OSError:
+                except OSError as exc:
+                    logger.debug("UPS did not respond at address %s: %s", hex(address), exc)
                     continue
                 temp_c = (TEMPERATURE_OFFSET_VOLTAGE - values["temp"]) / TEMPERATURE_SCALE
+                logger.info("UPS responded at address %s", hex(address))
                 return UPSReadings(
                     address=address,
                     vin=values["vin"],
@@ -86,10 +94,13 @@ def read_ups(bus_id: int, addresses: Iterable[int]) -> UPSReadings:
                     temperature_c=temp_c,
                 )
     except SMBusNotAvailable:
+        logger.warning("SMBus not available while reading UPS")
         raise
     except Exception as exc:  # pragma: no cover - defensive
         # Propagate as runtime error to the caller for uniform handling.
+        logger.error("Unexpected error during UPS read: %s", exc)
         raise RuntimeError(f"Unexpected error reading UPS: {exc}") from exc
 
     attempted = ", ".join(hex(addr) for addr in address_attempts)
+    logger.error("UPS did not respond on any addresses: %s", attempted)
     raise RuntimeError(f"UPS did not respond on addresses: {attempted}")

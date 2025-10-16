@@ -9,6 +9,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8000
 DEFAULT_LOG_LEVEL = "info"
+DEFAULT_LOG_ERROR_ENABLED = True
+DEFAULT_LOG_WARNING_ENABLED = True
+DEFAULT_LOG_INFO_ENABLED = True
+DEFAULT_LOG_DEBUG_ENABLED = False
 DEFAULT_ALLOWED_ORIGINS = ("*",)
 DEFAULT_CAMERA_DEVICE_INDEX = 0
 DEFAULT_PIR_PINS = (17, 27)
@@ -28,6 +32,22 @@ class AppSettings(BaseSettings):
     port: int = Field(default=DEFAULT_PORT, description="Port for the API server.")
     reload: bool = Field(default=False, description="Enable auto-reload. Use only during development.")
     log_level: str = Field(default=DEFAULT_LOG_LEVEL, description="Uvicorn log level.")
+    log_error_enabled: bool = Field(
+        default=DEFAULT_LOG_ERROR_ENABLED,
+        description="Emit error-level log records.",
+    )
+    log_warning_enabled: bool = Field(
+        default=DEFAULT_LOG_WARNING_ENABLED,
+        description="Emit warning-level log records.",
+    )
+    log_info_enabled: bool = Field(
+        default=DEFAULT_LOG_INFO_ENABLED,
+        description="Emit information-level log records.",
+    )
+    log_debug_enabled: bool = Field(
+        default=DEFAULT_LOG_DEBUG_ENABLED,
+        description="Emit debug-level log records.",
+    )
     allowed_origins: list[str] = Field(
         default_factory=lambda: list(DEFAULT_ALLOWED_ORIGINS),
         description="CORS origins allowed to access the API.",

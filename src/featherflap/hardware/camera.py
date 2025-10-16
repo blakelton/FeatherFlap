@@ -6,6 +6,7 @@ import time
 from contextlib import contextmanager
 from typing import Generator, Optional
 
+from ..logger import get_logger
 
 DEFAULT_DEVICE_INDEX = 0
 DEFAULT_FRAME_WIDTH = 640
@@ -18,6 +19,8 @@ STREAM_QUALITY_MAX = 90
 MIN_STREAM_FPS = 1.0
 DEFAULT_STREAM_FPS = 10.0
 FRAME_INTERVAL_BASE_SECONDS = 1.0
+logger = get_logger(__name__)
+_cv2_loaded = False
 
 
 class CameraUnavailable(RuntimeError):
@@ -25,10 +28,15 @@ class CameraUnavailable(RuntimeError):
 
 
 def _ensure_cv2():
+    global _cv2_loaded
     try:
         import cv2  # type: ignore
     except ImportError as exc:  # pragma: no cover - optional dependency
+        logger.error("OpenCV import failed: %s", exc)
         raise CameraUnavailable("OpenCV (cv2) is not installed.") from exc
+    if not _cv2_loaded:
+        logger.debug("OpenCV library successfully loaded")
+        _cv2_loaded = True
     return cv2
 
 
@@ -36,9 +44,11 @@ def _ensure_cv2():
 def _open_capture(device: int | str, width: Optional[int], height: Optional[int]):
     cv2 = _ensure_cv2()
     index = device if isinstance(device, int) else str(device)
+    logger.debug("Opening camera device %s (width=%s height=%s)", index, width, height)
     capture = cv2.VideoCapture(index, cv2.CAP_V4L2)
     if not capture.isOpened():
         capture.release()
+        logger.error("Unable to open camera device %s", index)
         raise CameraUnavailable(f"Unable to open camera device {index}.")
     if width:
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
@@ -47,6 +57,7 @@ def _open_capture(device: int | str, width: Optional[int], height: Optional[int]
     try:
         yield capture
     finally:
+        logger.debug("Releasing camera device %s", index)
         capture.release()
 
 
@@ -58,9 +69,11 @@ def capture_jpeg_frame(
 ) -> bytes:
     """Capture a single frame and return it as JPEG bytes."""
 
+    logger.debug("Capturing JPEG frame (device=%s width=%s height=%s quality=%s)", device, width, height, quality)
     with _open_capture(device, width, height) as capture:
         ok, frame = capture.read()
         if not ok or frame is None:
+            logger.error("Camera frame capture failed: empty frame received")
             raise CameraUnavailable("Camera opened but did not deliver a frame.")
         cv2 = _ensure_cv2()
         encode_params = [
@@ -69,8 +82,11 @@ def capture_jpeg_frame(
         ]
         success, encoded = cv2.imencode(".jpg", frame, encode_params)
         if not success:
+            logger.error("Camera frame encoding failed")
             raise CameraUnavailable("Failed to encode camera frame as JPEG.")
-        return encoded.tobytes()
+        payload = encoded.tobytes()
+        logger.info("Captured single JPEG frame (%d bytes)", len(payload))
+        return payload
 
 
 def mjpeg_stream(
@@ -83,6 +99,14 @@ def mjpeg_stream(
     """Yield multipart MJPEG frames suitable for a StreamingResponse."""
 
     frame_interval = FRAME_INTERVAL_BASE_SECONDS / max(MIN_STREAM_FPS, fps)
+    logger.info(
+        "Starting MJPEG stream (device=%s width=%s height=%s fps=%s quality=%s)",
+        device,
+        width,
+        height,
+        fps,
+        quality,
+    )
     with _open_capture(device, width, height) as capture:
         cv2 = _ensure_cv2()
         encode_params = [
@@ -93,11 +117,14 @@ def mjpeg_stream(
             start = time.monotonic()
             ok, frame = capture.read()
             if not ok or frame is None:
+                logger.error("Camera stream halted: capture returned empty frame")
                 raise CameraUnavailable("Camera stream halted unexpectedly.")
             success, encoded = cv2.imencode(".jpg", frame, encode_params)
             if not success:
+                logger.error("Camera stream encoding failed")
                 raise CameraUnavailable("Failed to encode camera frame as JPEG.")
             payload = encoded.tobytes()
+            logger.debug("Encoded MJPEG frame (%d bytes)", len(payload))
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n"
