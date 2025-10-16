@@ -1,0 +1,15 @@
+
+
+Please add a professional logging system to this project. I would like a logger to be made and then added throughout the code. I want this logger to be created as part of this project so that I can enable various levels of logging. 
+
+Please update 
+
+Catagories of logging should be:
+error
+warning
+information
+debug
+
+After making the logger please go through ALL code files and update the code so that this logger is used for these levels of information. 
+
+Normally error, warning and information should be shown - but all levels of logging should be able to be turned on and off using flags for each

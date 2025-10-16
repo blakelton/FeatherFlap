@@ -2,6 +2,41 @@
 
 FeatherFlap is a smart bird house platform designed for the Raspberry Pi Zero 2 W. The system combines resilient power management, environmental sensing, and imaging to monitor bird behaviour safely and reliably. The reference build now uses an AHT20 + BMP280 combo module for temperature, humidity, and barometric pressure. This repository includes a Python diagnostics server that exposes hardware tests through a browser so you can validate each peripheral after wiring.
 
+## Quick Start (Raspberry Pi Zero 2 W)
+
+1. Update apt and install required system packages:
+   ```bash
+   sudo apt update
+   sudo apt install -y python3-pip python3-dev python3-opencv libatlas-base-dev \
+       libjpeg-dev libopenjp2-7 libtiff6 libcamera-dev libcap-dev python3-libcamera \
+       libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libavfilter-dev \
+       libswscale-dev libswresample-dev
+   ```
+   These headers and libraries are needed by OpenCV, PiCamera2 (via `python-prctl`), and the `av` dependency used by the camera stack.
+   _Expected time on Pi Zero 2 W: 5–10 minutes, depending on network speed._
+2. Clone the repository and set up a virtual environment:
+   ```bash
+   git clone https://github.com/blakelton/FeatherFlap.git
+   cd FeatherFlap
+   python -m venv .venv
+   source .venv/bin/activate
+   python -m pip install --upgrade pip
+   ```
+   _Expected time: 2–4 minutes (dominated by the `pip` self-upgrade)._
+3. Install native camera/video bindings from Raspberry Pi OS packages, then install Python dependencies. This avoids compiling large wheels (`opencv-python`, `av`) on the Pi.
+   ```bash
+   sudo apt install -y libopenblas-dev python3-opencv python3-av python3-picamera2 \
+       python3-rpi.gpio python3-smbus
+   pip install -e .
+   ```
+   _Expected time: 5–10 minutes for apt packages, <5 minutes for `pip install -e .`._
+4. Run the diagnostics server:
+   ```bash
+   featherflap serve --host 0.0.0.0 --port 8000
+   ```
+   Open `http://<pi-ip>:8000/` to access the dashboard or call the JSON endpoints under `/api/tests`.
+   _Expected time: server starts within 5–10 seconds once dependencies are installed._
+
 ---
 
 ## Application Overview
