@@ -87,10 +87,11 @@ Additional runtime inputs:
 ## Development Workflow for Agents
 1. **Environment Setup**: `python -m venv .venv && source .venv/bin/activate && pip install -e .` (append `.[hardware]` on a Raspberry Pi with peripherals).
 2. **Testing**: Run `python -m pytest` (defaults to `-q`). Tests respect optional-dependency availability by skipping.
-3. **Linting/Formatting**: No enforced tooling yet—follow PEP 8, keep imports sorted, and add type hints consistent with existing code.
-4. **Local Debugging**: Use the `/api/tests` routes or printed results to verify new diagnostics. For camera/streaming, rely on fallback SKIPPED paths when cv2 or hardware is missing.
-5. **Documentation Updates**: Update `README.md` for user-facing changes; use this `AGENTS.md` for agent-facing conventions.
-6. **Versioning**: Update `pyproject.toml` version when preparing releases; ensure `__init__.__version__` reflects the installed package.
+3. **Manual Hardware Scripts**: For on-device validation run the helpers under `scripts/`, e.g. `python scripts/test_ups.py` or `python scripts/test_rgb_led.py`, to exercise each peripheral in isolation before launching the web UI.
+4. **Linting/Formatting**: No enforced tooling yet—follow PEP 8, keep imports sorted, and add type hints consistent with existing code.
+5. **Local Debugging**: Use the `/api/tests` routes or printed results to verify new diagnostics. For camera/streaming, rely on fallback SKIPPED paths when cv2 or hardware is missing.
+6. **Documentation Updates**: Update `README.md` for user-facing changes; use this `AGENTS.md` for agent-facing conventions.
+7. **Versioning**: Update `pyproject.toml` version when preparing releases; ensure `__init__.__version__` reflects the installed package.
 
 ## Working Without Hardware Access
 - Diagnostics degrade gracefully—most tests return `SKIPPED` when optional modules are unavailable.
@@ -382,4 +383,3 @@ This quality evaluation requirement applies to:
 - Documentation with code examples
 
 **No Exceptions**: This ensures consistent, maintainable, and high-quality code throughout the ENTIRE project, regardless of the specific component or task being worked on.
-

@@ -146,6 +146,22 @@ python -m pytest
 
 If optional hardware dependencies are missing locally, the diagnostics gracefully mark the corresponding tests as `skipped`. Run the suite on a development machine to ensure the FastAPI app builds, and on the Raspberry Pi to validate the full stack.
 
+### Manual hardware validation scripts
+
+The repo now ships standalone scripts that exercise each peripheral without bringing up the FastAPI server. Activate your virtual environment first, then run:
+
+```bash
+python scripts/test_i2c_bus.py                # Verify the I2C device node is reachable
+python scripts/test_ups.py --addresses 0x48   # Check PiZ-UpTime telemetry on specific addresses
+python scripts/test_environmental.py          # Read AHT20 + BMP280 values once
+python scripts/test_picamera.py               # Spin up the CSI camera via Picamera2
+python scripts/test_usb_camera.py --output frame.jpg  # Capture a JPEG from the USB camera
+python scripts/test_pir.py --samples 5        # Poll PIR sensor pins multiple times
+python scripts/test_rgb_led.py --rounds 3     # Cycle the RGB LED channels several times
+```
+
+Each script honours the `FEATHERFLAP_*` configuration variables and exposes CLI flags so you can override bus numbers, GPIO pins, or camera options per run.
+
 ---
 
 ## Hardware Overview & Purpose
