@@ -212,8 +212,39 @@ In effect, the system is intended to live inside (or adjacent to) a birdhouse, m
 | Temp/Humidity Sensor (I²C) | Pin 5 (SCL) | Clock line | Shared |
 | Light Sensor (if I²C) | Pin 3, Pin 5 | Shared bus | Or analog to ADC if non-digital |
 | Motion Sensor (PIR) | GPIO pin (e.g. Pin 11 / GPIO17) | Digital input | Use a free GPIO that supports interrupts |
-| IR LED / Illumination | GPIO pin (e.g. Pin 13 / GPIO27) | Digital output (or via transistor) | Provide ground and control path |
+| RGB LED (R/G/B) | Pins 18/16/12 (GPIO24/23/18) | LED channels (red/green/blue) | Drive via GPIO with current-limiting resistors |
+| IR LED / Illumination | GPIO pin (e.g. Pin 19 / GPIO10) | Digital output (or via transistor) | Optional IR flood or lighting |
 | Optional additional sensors | Various GPIO / SPI / I²C | As required | Use multiplexing or expanders if needed |
+
+---
+
+### Raspberry Pi 40‑pin Header Cheat Sheet
+
+```text
+┌───────────────────────────────────────────────────────────────┐
+│ 3V3 (1)  [●]   (2)  5V  [●][UPS 5V OUT]                      │
+│ SDA1 / GPIO2 (3)  [●][UPS I2C SDA]   (4)  5V  [●][UPS 5V OUT]│
+│ SCL1 / GPIO3 (5)  [●][UPS I2C SCL]   (6)  GND [●][UPS GND]   │
+│ GPIO4         (7)  [○]              (8)  TXD0 / GPIO14 [○]    │
+│ GND           (9)  [●]              (10) RXD0 / GPIO15 [○]    │
+│ GPIO17 (PIR1) (11) [★]              (12) GPIO18 (LED‑B) [♦]   │
+│ GPIO27 (PIR2) (13) [★]              (14) GND [●]               │
+│ GPIO22        (15) [○]              (16) GPIO23 (LED‑G) [♦]   │
+│ 3V3           (17) [●]              (18) GPIO24 (LED‑R) [♦]   │
+│ MOSI / GPIO10 (19) [○]              (20) GND [●]               │
+│ MISO / GPIO9  (21) [○]              (22) GPIO25 [○]            │
+│ SCLK / GPIO11 (23) [○]              (24) CE0 / GPIO8 [○]       │
+│ GND          (25) [●]               (26) CE1 / GPIO7 [○]       │
+│ ID_SD / GPIO0 (27) [○]              (28) ID_SC / GPIO1 [○]     │
+│ GPIO5        (29) [○]               (30) GND [●]               │
+│ GPIO6        (31) [○]               (32) GPIO12 [○]            │
+│ GPIO13       (33) [○]               (34) GND [●]               │
+│ GPIO19       (35) [○]               (36) GPIO16 [○]            │
+│ GPIO26       (37) [○]               (38) GPIO20 [○]            │
+│ GND          (39) [●]               (40) GPIO21 [○]            │
+└───────────────────────────────────────────────────────────────┘
+Legend: [●] Power/GND · [★] PIR sensors · [♦] RGB LED (R,G,B) · [○] Spare GPIO · [UPS …] PiZ‑UpTime
+```
 
 ---
 
