@@ -87,7 +87,7 @@ Additional runtime inputs:
 ## Development Workflow for Agents
 1. **Environment Setup**: `python -m venv .venv && source .venv/bin/activate && pip install -e .` (append `.[hardware]` on a Raspberry Pi with peripherals).
 2. **Testing**: Run `python -m pytest` (defaults to `-q`). Tests respect optional-dependency availability by skipping.
-3. **Manual Hardware Scripts**: For on-device validation run the helpers under `scripts/`, e.g. `python scripts/test_ups.py` or `python scripts/test_rgb_led.py`, to exercise each peripheral in isolation before launching the web UI.
+3. **Manual Hardware Scripts**: For on-device validation run the helpers under `scripts/`, e.g. `python scripts/test_ups.py` or `python scripts/test_rgb_led.py`, to exercise each peripheral in isolation before launching the web UI; on Raspberry Pi OS Bookworm the I2C enable flag lives in `/boot/firmware/config.txt` (use `sudo raspi-config` or edit the file directly, then reboot).
 4. **Linting/Formatting**: No enforced tooling yet—follow PEP 8, keep imports sorted, and add type hints consistent with existing code.
 5. **Local Debugging**: Use the `/api/tests` routes or printed results to verify new diagnostics. For camera/streaming, rely on fallback SKIPPED paths when cv2 or hardware is missing.
 6. **Documentation Updates**: Update `README.md` for user-facing changes; use this `AGENTS.md` for agent-facing conventions.

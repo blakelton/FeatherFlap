@@ -24,11 +24,11 @@ FeatherFlap is a smart bird house platform designed for the Raspberry Pi Zero 2 
    ```
    _Expected time: 2–4 minutes (dominated by the `pip` self-upgrade)._
 3. Install native camera/video bindings from Raspberry Pi OS packages, then install Python dependencies. This avoids compiling large wheels (`opencv-python`, `av`) on the Pi.
-   ```bash
-   sudo apt install -y libopenblas-dev python3-opencv python3-av python3-picamera2 \
-       python3-rpi.gpio python3-smbus
-   pip install -e .
-   ```
+```bash
+sudo apt install -y libopenblas-dev python3-opencv python3-av python3-picamera2 \
+    python3-rpi.gpio python3-smbus
+pip install -e .
+```
    _Expected time: 5–10 minutes for apt packages, <5 minutes for `pip install -e .`._
 4. Run the diagnostics server:
    ```bash
@@ -148,7 +148,7 @@ If optional hardware dependencies are missing locally, the diagnostics gracefull
 
 ### Manual hardware validation scripts
 
-The repo now ships standalone scripts that exercise each peripheral without bringing up the FastAPI server. Activate your virtual environment first, then run:
+The repo now ships standalone scripts that exercise each peripheral without bringing up the FastAPI server. Activate your virtual environment first, make sure I2C is enabled (`sudo raspi-config nonint do_i2c 0` or add `dtparam=i2c_arm=on` to `/boot/firmware/config.txt` on Raspberry Pi OS Bookworm, then reboot), then run:
 
 ```bash
 python scripts/test_i2c_bus.py                # Verify the I2C device node is reachable
@@ -161,6 +161,9 @@ python scripts/test_rgb_led.py --rounds 3     # Cycle the RGB LED channels sever
 ```
 
 Each script honours the `FEATHERFLAP_*` configuration variables and exposes CLI flags so you can override bus numbers, GPIO pins, or camera options per run.
+
+> **Note**  
+> The I2C-dependent scripts (`test_environmental.py`, `test_ups.py`, `test_i2c_bus.py`) require the system I2C interface (`dtparam=i2c_arm=on` in `/boot/firmware/config.txt`, or enable it via `sudo raspi-config`) plus either `python3-smbus` from apt or the `smbus2` wheel. If you see “smbus/smbus2 library is not installed”, install the package with `sudo apt install python3-smbus` (or `pip install smbus2` inside your virtualenv).
 
 ---
 
