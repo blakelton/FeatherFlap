@@ -6,6 +6,10 @@ from __future__ import annotations
 import argparse
 import sys
 
+from _paths import add_project_src_to_path
+
+add_project_src_to_path()
+
 from featherflap.config import (
     DEFAULT_AHT20_I2C_ADDRESS,
     DEFAULT_BMP280_I2C_ADDRESS,

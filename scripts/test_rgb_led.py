@@ -7,6 +7,10 @@ import argparse
 import sys
 import time
 
+from _paths import add_project_src_to_path
+
+add_project_src_to_path()
+
 from featherflap.config import get_settings
 from _args import parse_int_sequence
 

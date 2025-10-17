@@ -7,6 +7,10 @@ import argparse
 import sys
 from pathlib import Path
 
+from _paths import add_project_src_to_path
+
+add_project_src_to_path()
+
 from featherflap.config import DEFAULT_CAMERA_DEVICE_INDEX, get_settings
 from featherflap.hardware.camera import (
     CameraUnavailable,

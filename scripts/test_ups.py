@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from _paths import add_project_src_to_path
+
+add_project_src_to_path()
+
 from featherflap.config import DEFAULT_UPTIME_I2C_ADDRESSES, get_settings
 from featherflap.hardware.i2c import SMBusNotAvailable
 from featherflap.hardware.power import UPSReadings, read_ups
