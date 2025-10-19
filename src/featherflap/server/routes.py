@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import nullcontext
 from typing import Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from starlette.concurrency import iterate_in_threadpool
 
@@ -22,6 +23,7 @@ from ..hardware import (
 )
 from ..hardware.i2c import SMBusNotAvailable
 from ..logger import get_logger
+from ..runtime import CameraBusyError
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -205,6 +207,16 @@ def _resolve_ups_addresses(settings) -> List[int]:
     return resolved
 
 
+def _camera_guard(request: Request, purpose: str):
+    coordinator = getattr(request.app.state, "camera_coordinator", None)
+    if coordinator is None:
+        return nullcontext()
+    try:
+        return coordinator.acquire(purpose, blocking=False)
+    except CameraBusyError as exc:
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(exc)) from exc
+
+
 def _aggregate_status(results: List[Dict[str, str]]) -> str:
     highest = max((STATUS_PRIORITY.get(result["status"], 0) for result in results), default=0)
     for status, score in STATUS_PRIORITY.items():
@@ -271,28 +283,46 @@ async def ups_status() -> Dict[str, object]:
 
     settings = get_settings()
     addresses = _resolve_ups_addresses(settings)
-    logger.debug("Querying UPS telemetry on bus=%s addresses=%s", settings.i2c_bus_id, [hex(a) for a in addresses])
+    logger.debug(
+        "Querying UPS telemetry on bus=%s addresses=%s (shunt=%.5fΩ)",
+        settings.i2c_bus_id,
+        [hex(a) for a in addresses],
+        settings.uptime_shunt_resistance_ohms,
+    )
     try:
-        readings = await asyncio.to_thread(read_ups, settings.i2c_bus_id, addresses)
+        readings = await asyncio.to_thread(
+            read_ups,
+            settings.i2c_bus_id,
+            addresses,
+            settings.uptime_shunt_resistance_ohms,
+        )
     except SMBusNotAvailable as exc:
         logger.warning("SMBus not available for UPS telemetry: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except RuntimeError as exc:
         logger.error("UPS telemetry read failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    logger.info("UPS telemetry read succeeded at address %s", readings.to_dict().get("address"))
-    return {"status": HardwareStatus.OK.value, "readings": readings.to_dict()}
+    details = readings.to_dict()
+    logger.info(
+        "UPS telemetry read succeeded at address %s (bus=%sV current=%s)",
+        details.get("address"),
+        details.get("bus_voltage_v"),
+        details.get("current_ma"),
+    )
+    return {"status": HardwareStatus.OK.value, "readings": details}
 
 
 @router.get("/api/camera/frame")
-async def camera_frame() -> Response:
+async def camera_frame(request: Request) -> Response:
     """Capture a single JPEG frame from the USB camera."""
 
     settings = get_settings()
     device = settings.camera_device if settings.camera_device is not None else DEFAULT_CAMERA_DEVICE_INDEX
     logger.debug("Capturing single camera frame from device %s", device)
+    guard = _camera_guard(request, "snapshot")
     try:
-        frame = await asyncio.to_thread(capture_jpeg_frame, device)
+        with guard:
+            frame = await asyncio.to_thread(capture_jpeg_frame, device)
     except CameraUnavailable as exc:
         logger.warning("USB camera unavailable for single frame capture: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -301,22 +331,38 @@ async def camera_frame() -> Response:
 
 
 @router.get("/api/camera/stream")
-async def camera_stream() -> StreamingResponse:
+async def camera_stream(request: Request) -> StreamingResponse:
     """Stream MJPEG frames from the USB camera."""
 
     settings = get_settings()
     device = settings.camera_device if settings.camera_device is not None else DEFAULT_CAMERA_DEVICE_INDEX
     logger.debug("Opening camera stream for device %s", device)
+    guard = _camera_guard(request, "stream")
+
+    def generator():
+        with guard:
+            yield from mjpeg_stream(device)
+
     try:
-        generator = mjpeg_stream(device)
+        stream = iterate_in_threadpool(generator())
     except CameraUnavailable as exc:
         logger.warning("USB camera unavailable for streaming: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("USB camera stream initialised for device %s", device)
     return StreamingResponse(
-        iterate_in_threadpool(generator),
+        stream,
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@router.get("/api/run/status")
+async def run_status(request: Request) -> Dict[str, object]:
+    """Return a snapshot of run-mode controller activity."""
+
+    controller = getattr(request.app.state, "run_controller", None)
+    if controller is None:
+        raise HTTPException(status_code=404, detail="Run mode is not active.")
+    return {"mode": "run", "status": controller.status()}
 
 
 @router.post("/api/tests/run-all")

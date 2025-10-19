@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
+import threading
+from pathlib import Path
 from typing import Generator, Optional
 
 from ..logger import get_logger
@@ -120,9 +122,9 @@ def mjpeg_stream(
                 logger.error("Camera stream halted: capture returned empty frame")
                 raise CameraUnavailable("Camera stream halted unexpectedly.")
             success, encoded = cv2.imencode(".jpg", frame, encode_params)
-            if not success:
-                logger.error("Camera stream encoding failed")
-                raise CameraUnavailable("Failed to encode camera frame as JPEG.")
+        if not success:
+            logger.error("Camera stream encoding failed")
+            raise CameraUnavailable("Failed to encode camera frame as JPEG.")
             payload = encoded.tobytes()
             logger.debug("Encoded MJPEG frame (%d bytes)", len(payload))
             yield (
@@ -138,3 +140,43 @@ def mjpeg_stream(
             sleep_time = frame_interval - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
+
+
+def record_video(
+    output_path: Path,
+    *,
+    device: int | str = DEFAULT_DEVICE_INDEX,
+    width: int = DEFAULT_FRAME_WIDTH,
+    height: int = DEFAULT_FRAME_HEIGHT,
+    fps: float = DEFAULT_STREAM_FPS,
+    max_seconds: int = 30,
+    stop_event: Optional[threading.Event] = None,
+) -> None:
+    """Record a video clip to ``output_path`` using OpenCV."""
+
+    if fps <= 0:
+        raise ValueError("FPS must be positive.")
+    duration_limit = max(1, max_seconds)
+    stop_event = stop_event or threading.Event()
+    cv2 = _ensure_cv2()
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    with _open_capture(device, width, height) as capture:
+        writer = cv2.VideoWriter(str(output_path), fourcc, float(fps), (int(width), int(height)))
+        start = time.monotonic()
+        frame_interval = 1.0 / fps
+        frame_count = 0
+        try:
+            while not stop_event.is_set() and (time.monotonic() - start) < duration_limit:
+                ok, frame = capture.read()
+                if not ok or frame is None:
+                    logger.warning("Camera frame read failed during recording; stopping early.")
+                    break
+                writer.write(frame)
+                frame_count += 1
+                elapsed = time.monotonic() - start
+                sleep_time = frame_interval * frame_count - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+        finally:
+            writer.release()
+    logger.info("Recorded %d frames to %s", frame_count, output_path)

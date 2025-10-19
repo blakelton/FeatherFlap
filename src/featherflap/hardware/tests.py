@@ -9,11 +9,7 @@ import time
 from contextlib import suppress
 from typing import Dict, Iterable, List, Optional
 
-from ..config import (
-    DEFAULT_CAMERA_DEVICE_INDEX,
-    DEFAULT_UPTIME_I2C_ADDRESSES,
-    get_settings,
-)
+from ..config import DEFAULT_CAMERA_DEVICE_INDEX, DEFAULT_UPTIME_I2C_ADDRESSES, OperationMode, get_settings
 from ..logger import get_logger
 from .base import HardwareStatus, HardwareTest, HardwareTestResult
 from .camera import CameraUnavailable, capture_jpeg_frame
@@ -123,10 +119,10 @@ class I2CBusTest(HardwareTest):
         )
 
 
-class PiZUpTimeTest(HardwareTest):
+class SeengreatUPSTest(HardwareTest):
     id = "ups"
-    name = "PiZ-UpTime UPS"
-    description = "Read voltages and board temperature from the PiZ-UpTime HAT."
+    name = "Seengreat UPS Module"
+    description = "Read bus voltage and current from the Seengreat Pi Zero UPS HAT (B)."
     category = "power"
 
     def run(self) -> HardwareTestResult:
@@ -149,7 +145,11 @@ class PiZUpTimeTest(HardwareTest):
             addresses = list(DEFAULT_UPTIME_I2C_ADDRESSES)
         logger.debug("UPS diagnostic probing addresses: %s", [hex(a) for a in addresses])
         try:
-            readings = read_ups(settings.i2c_bus_id, addresses)
+            readings = read_ups(
+                settings.i2c_bus_id,
+                addresses,
+                settings.uptime_shunt_resistance_ohms,
+            )
         except SMBusNotAvailable:
             logger.warning("SMBus not available during UPS diagnostic run")
             return _skipped_result(
@@ -162,15 +162,27 @@ class PiZUpTimeTest(HardwareTest):
                 id=self.id,
                 name=self.name,
                 status=HardwareStatus.ERROR,
-                summary="Unable to read from the PiZ-UpTime UPS.",
+                summary="Unable to read from the UPS telemetry chip.",
                 details={"error": str(exc), "addresses": [hex(a) for a in addresses]},
             )
-        logger.info("UPS diagnostic succeeded at address %s", hex(readings.address))
+        logger.info(
+            "UPS diagnostic succeeded at address %s (bus=%.2fV current=%s)",
+            hex(readings.address),
+            readings.bus_voltage_v,
+            f"{readings.current_ma:.1f}mA" if readings.current_ma is not None else "n/a",
+        )
+        if readings.current_ma is not None:
+            summary = (
+                f"UPS {hex(readings.address)} bus {readings.bus_voltage_v:.2f} V, "
+                f"{readings.current_ma:.1f} mA."
+            )
+        else:
+            summary = f"UPS {hex(readings.address)} bus {readings.bus_voltage_v:.2f} V."
         return HardwareTestResult(
             id=self.id,
             name=self.name,
             status=HardwareStatus.OK,
-            summary=f"UPS responded at {hex(readings.address)}.",
+            summary=summary,
             details=readings.to_dict(),
         )
 
@@ -411,15 +423,19 @@ def default_tests() -> List[HardwareTest]:
     """Return the default suite of hardware diagnostics."""
 
     logger.debug("Creating default hardware diagnostic suite")
-    suite = [
+    settings = get_settings()
+    suite: List[HardwareTest] = [
         SystemInfoTest(),
         I2CBusTest(),
-        PiZUpTimeTest(),
+        SeengreatUPSTest(),
         EnvironmentalSensorTest(),
         PicameraTest(),
         UsbCameraTest(),
         PIRSensorTest(),
         RGBLedTest(),
     ]
+    if settings.mode == OperationMode.RUN:
+        suite = [test for test in suite if not isinstance(test, (PicameraTest, UsbCameraTest))]
+        logger.debug("Run mode detected; camera diagnostics removed from default suite")
     logger.info("Initialised default hardware diagnostic suite with %d tests", len(suite))
     return suite

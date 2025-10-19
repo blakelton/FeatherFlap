@@ -13,20 +13,22 @@ The `scripts/` folder hosts command-line helpers for validating each peripheral 
 | Script | Purpose | Key Flags |
 | ------ | ------- | --------- |
 | `test_i2c_bus.py` | Confirm the I²C bus is available and responsive. | `--bus-id` to choose an alternate bus. |
-| `test_ups.py` | Poll the Seengreat Pi Zero UPS HAT (B) telemetry via INA219/fuel-gauge addresses. | `--addresses 0x40 0x0b` to target specific devices. |
+| `test_ups.py` | Poll the Seengreat Pi Zero UPS HAT (B) telemetry via INA219/fuel-gauge addresses. | `--addresses 0x40 0x0b`, `--shunt-ohms` to override defaults. |
 | `test_environmental.py` | Capture a single reading from the AHT20 + BMP280 combo sensor. | `--bus-id`, `--aht20-address`, `--bmp280-address`. |
 | `test_pir.py` | Sample PIR motion sensor GPIO levels. | `--pins`, `--samples`, `--interval`. |
 | `test_rgb_led.py` | Cycle the RGB LED channels to validate wiring. | `--rounds`, `--delay`. |
 | `test_picamera.py` | Spin up Picamera2 and display capture stats. | `--preview`, `--resolution`. |
-| `test_usb_camera.py` | Grab a JPEG frame from a USB camera via OpenCV. | `--device-index`, `--output`. |
+| `test_usb_camera.py` | Grab a JPEG frame from a USB camera via OpenCV. | `--device`, `--output`. |
 
 Run any script with `--help` to see full usage options. Example:
 
 ```bash
-python scripts/test_ups.py --addresses 0x40 0x0b --samples 5
+python scripts/test_ups.py --addresses 0x40 0x0b --shunt-ohms 0.01
 ```
 
 These helpers are safe to run repeatedly; they close devices and clean up GPIO state when finished.
+
+> **Tip:** When the main server is running in `mode=run`, camera-facing scripts (`test_usb_camera.py`, `test_picamera.py`) may contend with the recording pipeline. Stop the run-mode service or wait until recordings finish before executing those scripts.
 
 ## Usage Cheatsheet
 

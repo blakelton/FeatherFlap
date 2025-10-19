@@ -42,7 +42,7 @@ python -m pytest -vv -r a
 Use the hardware scripts whenever you need to validate peripherals on an actual Raspberry Pi:
 
 - `python scripts/test_i2c_bus.py --bus-id 1` – confirm the chosen I²C bus opens successfully.
-- `python scripts/test_ups.py --addresses 0x40 0x0b` – read Seengreat UPS telemetry (adjust addresses as required).
+- `python scripts/test_ups.py --addresses 0x40 0x0b --shunt-ohms 0.01` – read Seengreat UPS telemetry (adjust addresses/resistance as required).
 - `python scripts/test_environmental.py --aht20-address 0x38 --bmp280-address 0x76` – capture one set of AHT20/BMP280 readings.
 - `python scripts/test_pir.py --pins 17 27 --samples 5` – poll the configured PIR GPIO inputs multiple times.
 - `python scripts/test_rgb_led.py --rounds 3` – pulse the RGB LED channels to confirm wiring and GPIO control.

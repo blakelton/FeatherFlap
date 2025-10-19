@@ -1,8 +1,12 @@
 """Application configuration for FeatherFlap."""
 
+from __future__ import annotations
+
 import json
+from enum import Enum
 from functools import lru_cache
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,10 +22,25 @@ DEFAULT_ALLOWED_ORIGINS = ("*",)
 DEFAULT_CAMERA_DEVICE_INDEX = 0
 DEFAULT_PIR_PINS = (17, 27)
 DEFAULT_RGB_LED_PINS = (24, 23, 18)
-DEFAULT_UPTIME_I2C_ADDRESSES = (0x48, 0x49, 0x4B)
+DEFAULT_UPTIME_I2C_ADDRESSES = (0x40,)
 DEFAULT_AHT20_I2C_ADDRESS = 0x38
 DEFAULT_BMP280_I2C_ADDRESS = 0x76
 DEFAULT_I2C_BUS_ID = 1
+DEFAULT_UPTIME_SHUNT_RESISTANCE_OHMS = 0.01
+DEFAULT_RECORDINGS_PATH = "recordings"
+DEFAULT_RECORDING_MAX_SECONDS = 30
+DEFAULT_RECORDING_MIN_GAP_SECONDS = 45
+DEFAULT_MOTION_POLL_INTERVAL_SECONDS = 0.25
+DEFAULT_CAMERA_RECORD_WIDTH = 1280
+DEFAULT_CAMERA_RECORD_HEIGHT = 720
+DEFAULT_CAMERA_RECORD_FPS = 15.0
+
+
+class OperationMode(str, Enum):
+    """Overall application mode."""
+
+    TEST = "test"
+    RUN = "run"
 
 
 class AppSettings(BaseSettings):
@@ -57,9 +76,13 @@ class AppSettings(BaseSettings):
         default_factory=lambda: list(DEFAULT_ALLOWED_ORIGINS),
         description="CORS origins allowed to access the API.",
     )
+    mode: OperationMode = Field(
+        default=OperationMode.TEST,
+        description="Operating mode for the service. 'test' exposes diagnostics; 'run' enables automated recording.",
+    )
     camera_device: Optional[int] = Field(
         default=DEFAULT_CAMERA_DEVICE_INDEX,
-        description="Default video device index for USB camera tests.",
+        description="Default video device index for USB camera interactions.",
     )
     pir_pins: list[int] | str = Field(
         default_factory=lambda: list(DEFAULT_PIR_PINS),
@@ -71,7 +94,12 @@ class AppSettings(BaseSettings):
     )
     uptime_i2c_addresses: list[int] = Field(
         default_factory=lambda: list(DEFAULT_UPTIME_I2C_ADDRESSES),
-        description="I2C addresses to probe for the PiZ-UpTime HAT.",
+        description="I2C addresses to probe for UPS telemetry (Seengreat defaults to 0x40).",
+    )
+    uptime_shunt_resistance_ohms: float = Field(
+        default=DEFAULT_UPTIME_SHUNT_RESISTANCE_OHMS,
+        gt=0.0,
+        description="Shunt resistor value (ohms) used by the UPS INA219 current sensor.",
     )
     aht20_i2c_address: int = Field(
         default=DEFAULT_AHT20_I2C_ADDRESS,
@@ -82,6 +110,48 @@ class AppSettings(BaseSettings):
         description="I2C address for the BMP280 pressure sensor.",
     )
     i2c_bus_id: int = Field(default=DEFAULT_I2C_BUS_ID, description="I2C bus number to use for Raspberry Pi sensors.")
+    recordings_path: Path = Field(
+        default=Path(DEFAULT_RECORDINGS_PATH),
+        description="Directory where run-mode recordings are stored.",
+    )
+    network_export_path: Optional[Path] = Field(
+        default=None,
+        description="Optional network or removable storage path to mirror finished recordings.",
+    )
+    recording_max_seconds: int = Field(
+        default=DEFAULT_RECORDING_MAX_SECONDS,
+        gt=0,
+        description="Maximum length (seconds) of a single motion-triggered recording.",
+    )
+    recording_min_gap_seconds: int = Field(
+        default=DEFAULT_RECORDING_MIN_GAP_SECONDS,
+        ge=0,
+        description="Cooldown period (seconds) after a recording before another can start.",
+    )
+    motion_poll_interval_seconds: float = Field(
+        default=DEFAULT_MOTION_POLL_INTERVAL_SECONDS,
+        gt=0.0,
+        description="Polling interval (seconds) for motion detection when using PIR sensors.",
+    )
+    sleep_windows: list[Dict[str, str]] = Field(
+        default_factory=list,
+        description="List of quiet windows (\"HH:MM-HH:MM\") where run mode minimizes activity to save power.",
+    )
+    camera_record_width: int = Field(
+        default=DEFAULT_CAMERA_RECORD_WIDTH,
+        gt=0,
+        description="Video recording width in pixels.",
+    )
+    camera_record_height: int = Field(
+        default=DEFAULT_CAMERA_RECORD_HEIGHT,
+        gt=0,
+        description="Video recording height in pixels.",
+    )
+    camera_record_fps: float = Field(
+        default=DEFAULT_CAMERA_RECORD_FPS,
+        gt=0.0,
+        description="Frame rate used for run-mode recordings.",
+    )
 
     @field_validator("pir_pins", mode="before")
     @classmethod
@@ -120,6 +190,45 @@ class AppSettings(BaseSettings):
                         raise ValueError(f"Invalid PIR pin list: {value}") from exc
             raise ValueError(f"Unsupported PIR pin format: {value}")
         raise ValueError(f"Unsupported PIR pin type: {type(value)!r}")
+
+    @field_validator("sleep_windows", mode="before")
+    @classmethod
+    def _parse_sleep_windows(cls, value: Any) -> list[Dict[str, str]]:
+        """Normalise sleep window formats into a list of {'start': 'HH:MM', 'end': 'HH:MM'} dictionaries."""
+
+        if value in (None, "", []):
+            return []
+        raw_windows: List[str | Dict[str, str]]
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return []
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                parsed = [value]
+            raw_windows = parsed if isinstance(parsed, list) else [parsed]
+        elif isinstance(value, (list, tuple)):
+            raw_windows = list(value)
+        else:
+            raw_windows = [value]
+
+        normalised: list[Dict[str, str]] = []
+        for window in raw_windows:
+            if isinstance(window, dict):
+                start = window.get("start")
+                end = window.get("end")
+            elif isinstance(window, str):
+                parts = window.split("-")
+                if len(parts) != 2:
+                    raise ValueError(f"Invalid sleep window format: {window!r}")
+                start, end = parts[0].strip(), parts[1].strip()
+            else:
+                raise ValueError(f"Unsupported sleep window specification: {window!r}")
+            if not start or not end:
+                raise ValueError(f"Sleep window must include start and end times: {window!r}")
+            normalised.append({"start": start, "end": end})
+        return normalised
 
 
 @lru_cache(maxsize=1)

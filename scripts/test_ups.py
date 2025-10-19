@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual check for the PiZ-UpTime UPS HAT."""
+"""Manual check for the Seengreat Pi Zero UPS HAT (B)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from _args import parse_int_sequence
 
 def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = argparse.ArgumentParser(
-        description="Read the PiZ-UpTime UPS telemetry once and print the decoded values."
+        description="Read UPS telemetry once and print the decoded values."
     )
     parser.add_argument(
         "--bus-id",
@@ -34,6 +34,12 @@ def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
             "Ordered list of I2C addresses to try (accepts decimal or hex such as 0x48). "
             "Defaults to FEATHERFLAP_UPTIME_I2C_ADDRESSES or built-in addresses."
         ),
+    )
+    parser.add_argument(
+        "--shunt-ohms",
+        type=float,
+        default=None,
+        help="Value (in ohms) of the INA219 shunt resistor. Defaults to FEATHERFLAP_UPTIME_SHUNT_RESISTANCE_OHMS.",
     )
     return parser, parser.parse_args()
 
@@ -52,8 +58,10 @@ def main() -> int:
     else:
         addresses = list(DEFAULT_UPTIME_I2C_ADDRESSES)
 
+    shunt = args.shunt_ohms if args.shunt_ohms is not None else settings.uptime_shunt_resistance_ohms
+
     try:
-        readings: UPSReadings = read_ups(bus_id, addresses)
+        readings: UPSReadings = read_ups(bus_id, addresses, shunt)
     except SMBusNotAvailable:
         print("ERROR: smbus/smbus2 library is not installed.", file=sys.stderr)
         return 2
@@ -66,9 +74,15 @@ def main() -> int:
 
     data = readings.to_dict()
     print("UPS telemetry:")
-    for key in ("address", "vin", "vout", "vbat", "temperature_c"):
+    preferred = ("address", "bus_voltage_v", "shunt_voltage_mv", "current_ma", "power_mw")
+    printed: set[str] = set()
+    for key in preferred:
         if key in data:
             print(f"  {key}: {data[key]}")
+            printed.add(key)
+    for key, value in data.items():
+        if key not in printed:
+            print(f"  {key}: {value}")
     return 0
 
 

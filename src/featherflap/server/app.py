@@ -6,9 +6,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .. import __version__
-from ..config import get_settings
+from ..config import OperationMode, get_settings
 from ..hardware import HardwareTestRegistry, default_tests
 from ..logger import configure_logging, get_logger
+from ..runtime import CameraUsageCoordinator, ModeRegistry, RunModeController
 from . import routes
 
 
@@ -40,6 +41,31 @@ def create_application() -> FastAPI:
             allow_credentials=True,
         )
 
+    mode_registry = ModeRegistry()
+    mode_registry.acquire(settings.mode)
+    app.state.mode_registry = mode_registry
+    app.state.operation_mode = settings.mode
+    app.state.settings = settings
+
+    camera_coordinator: CameraUsageCoordinator | None = None
+    run_controller: RunModeController | None = None
+    if settings.mode == OperationMode.RUN:
+        camera_coordinator = CameraUsageCoordinator()
+        run_controller = RunModeController(settings, camera_coordinator)
+        app.state.camera_coordinator = camera_coordinator
+        app.state.run_controller = run_controller
+
+        @app.on_event("startup")
+        async def _start_run_mode() -> None:  # pragma: no cover - integration path
+            run_controller.start()
+
+        @app.on_event("shutdown")
+        async def _stop_run_mode() -> None:  # pragma: no cover - integration path
+            run_controller.stop()
+    else:
+        app.state.camera_coordinator = None
+        app.state.run_controller = None
+
     registry = HardwareTestRegistry()
     registry.extend(default_tests())
     app.state.registry = registry
@@ -47,4 +73,9 @@ def create_application() -> FastAPI:
 
     app.include_router(routes.router)
     logger.debug("API routes registered")
+
+    @app.on_event("shutdown")
+    async def _release_mode() -> None:  # pragma: no cover - integration path
+        mode_registry.release()
+
     return app

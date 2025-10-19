@@ -32,7 +32,7 @@ Welcome to FeatherFlap’s collaborative workspace. This guide gives Codex, Clau
 3. **Hardware Layer**:
    - `hardware/base.py` defines `HardwareTest` and `HardwareTestResult`.
    - `hardware/tests.py` implements diagnostic classes for system info, I²C bus, UPS, environment sensors, cameras, PIR, and RGB LED.
-   - `hardware/power.py` (UPS telemetry) and `hardware/sensors.py` (AHT20/BMP280) wrap the Seengreat Pi Zero UPS HAT (B) and environmental sensor combo. The UPS exposes power metrics through an INA219-compatible monitor and HM1160/HM series gauge over I²C.
+   - `hardware/power.py` (UPS telemetry) and `hardware/sensors.py` (AHT20/BMP280) wrap the Seengreat Pi Zero UPS HAT (B) and environmental sensor combo. The UPS exposes bus voltage/current via an INA219 monitor; some revisions add an HM-series fuel gauge for state-of-charge.
    - Optional hardware-dependent modules guard imports and downgrade failures to `SKIPPED` results when dependencies are absent.
 4. **Web/API Surface**: `server/routes.py` exposes HTML dashboard, JSON diagnostics endpoints, streaming camera routes, and async wrappers around the registry.
 5. **CLI**: `server/cli.py` surfaces `featherflap serve` via Typer and dispatches to Uvicorn’s factory mode.
@@ -45,7 +45,11 @@ All external configuration flows through `AppSettings` (env prefix `FEATHERFLAP_
 - `FEATHERFLAP_CAMERA_DEVICE`: default USB camera index.
 - `FEATHERFLAP_PIR_PINS`, `FEATHERFLAP_RGB_LED_PINS`: GPIO pin configuration (BCM numbering).
 - `FEATHERFLAP_I2C_BUS_ID`: Raspberry Pi I²C bus to probe (default `1`).
-- `FEATHERFLAP_UPTIME_I2C_ADDRESSES`: JSON list of UPS telemetry addresses. Legacy defaults (`[0x48, 0x49, 0x4B]`) match PiZ-UpTime; override with the Seengreat module's INA219/HM1160 addresses (e.g. `0x40`) after verifying with `i2cdetect`.
+- `FEATHERFLAP_UPTIME_I2C_ADDRESSES`: JSON list of UPS telemetry addresses (defaults to `[0x40]` for the Seengreat INA219; extend if your board exposes additional peripherals).
+- `FEATHERFLAP_UPTIME_SHUNT_RESISTANCE_OHMS`: INA219 shunt resistor value used to derive current draw (default `0.01`).
+- `FEATHERFLAP_MODE`: choose between `test` and `run`. Modes are mutually exclusive to avoid camera/UPS contention.
+- `FEATHERFLAP_SLEEP_WINDOWS`: JSON list of `"HH:MM-HH:MM"` strings defining quiet periods for run mode.
+- `FEATHERFLAP_RECORDINGS_PATH`, `FEATHERFLAP_NETWORK_EXPORT_PATH`: recording output directory and optional mirroring destination.
 - `FEATHERFLAP_AHT20_I2C_ADDRESS`, `FEATHERFLAP_BMP280_I2C_ADDRESS`: sensor addresses.
 
 Additional runtime inputs:
@@ -61,7 +65,8 @@ Additional runtime inputs:
 `hardware.tests.default_tests()` returns the canonical sequence loaded into the registry:
 - `SystemInfoTest`: platform summary and Python version.
 - `I2CBusTest`: verifies `smbus` availability and bus accessibility.
-- `PiZUpTimeTest`: legacy-named UPS diagnostic that polls the configured Seengreat Pi Zero UPS HAT (B) telemetry addresses for voltage/current and battery status data.
+- `SeengreatUPSTest`: UPS diagnostic that polls the Seengreat Pi Zero UPS HAT (B) telemetry addresses for bus voltage, shunt drop, and computed current/power.
+- When operating in run mode, camera-centric diagnostics are removed from the default registry to keep the recording pipeline deterministic.
 - `EnvironmentalSensorTest`: reads AHT20 (temp/humidity) and BMP280 (temp/pressure) with partial-success support.
 - `PicameraTest`: initialises Picamera2 (skips when the module is missing).
 - `UsbCameraTest`: captures a JPEG frame via OpenCV; skips cleanly if cv2/device unavailable.

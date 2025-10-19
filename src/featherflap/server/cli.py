@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 import typer
 import uvicorn
 
-from ..config import get_settings
+from ..config import OperationMode, get_settings
 from ..logger import configure_logging, get_logger
 
 app = typer.Typer(add_completion=False, help="FeatherFlap diagnostics tooling.")
@@ -19,9 +20,13 @@ def serve(
     port: Optional[int] = typer.Option(None, help="Port to bind the server to."),
     reload: Optional[bool] = typer.Option(None, help="Enable auto-reload (development only)."),
     log_level: Optional[str] = typer.Option(None, help="Logging level passed to Uvicorn."),
+    mode: Optional[OperationMode] = typer.Option(None, case_sensitive=False, help="Override the configured operating mode (test/run)."),
 ) -> None:
     """Start the diagnostics API server."""
 
+    if mode is not None:
+        os.environ["FEATHERFLAP_MODE"] = mode.value
+        get_settings.cache_clear()
     settings = get_settings()
     configure_logging(settings)
     logger = get_logger(__name__)

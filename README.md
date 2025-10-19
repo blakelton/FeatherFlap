@@ -2,6 +2,16 @@
 
 FeatherFlap is a smart bird house platform designed for the Raspberry Pi Zero 2 W. The system combines resilient power management, environmental sensing, and imaging to monitor bird behaviour safely and reliably. The reference build now uses an AHT20 + BMP280 combo module for temperature, humidity, and barometric pressure. This repository includes a Python diagnostics server that exposes hardware tests through a browser so you can validate each peripheral after wiring.
 
+## Intended Use & Deployment Flow
+
+FeatherFlap is meant to accompany the full lifecycle of a smart bird-house installation—from bench assembly to outdoor deployment and ongoing maintenance. The typical journey looks like this:
+
+- **Bench bring-up:** Assemble the Pi, Seengreat UPS HAT, sensors, and cameras. Use the CLI scripts (`scripts/`) to verify each peripheral before you enclose the hardware.
+- **Configuration & burn-in:** Set `FEATHERFLAP_*` environment variables or an `.env` file to match your wiring (GPIO pins, I²C addresses, UPS shunt value). Run `featherflap serve` locally to exercise the diagnostics repeatedly while monitoring logs.
+- **Deployment:** Move the Pi into the bird house, power it via the UPS, and keep the diagnostics API running in the background. The dashboard at `/` offers a quick health checklist during installation.
+- **Remote checks:** Periodically tunnel into the device (SSH + port-forwarding) to run the automated suite (`pytest`) or trigger `/api/tests/run-all` so you can confirm uptime, camera availability, and sensor drift without disassembling the hardware.
+- **Maintenance:** When swapping sensors, updating firmware, or replacing batteries, revisit the scripts and diagnostics to ensure each component recovers correctly.
+
 ## Quick Start (Raspberry Pi Zero 2 W)
 
 1. Update apt and install required system packages:
@@ -39,20 +49,53 @@ pip install -e .
 
 ---
 
-## Application Overview
+## Project Structure
 
-- `src/featherflap/` – Python package with hardware test abstractions and a FastAPI-powered diagnostics server.
-- `tests/` – Unit tests ensuring the web application boots and routes are registered.
-- `test_files/` – Original standalone scripts kept for reference and manual experimentation.
-- `pyproject.toml` – Project metadata and dependencies (install with the optional `hardware` extra on the Raspberry Pi).
+| Path | Purpose |
+| --- | --- |
+| `src/featherflap/` | Source package containing all runtime code. See the subfolders below. |
+| `src/featherflap/hardware/` | Diagnostics framework: hardware abstractions (`base.py`), registry, Seengreat UPS/INA219 driver (`power.py`), environmental sensor drivers (`sensors.py`), USB/CSI camera helpers, and the concrete test implementations (`tests.py`). |
+| `src/featherflap/server/` | FastAPI application factory, REST routes, and Typer CLI glue that launches Uvicorn. |
+| `src/featherflap/config.py` | Pydantic settings model sourcing values from `FEATHERFLAP_*` environment variables or an `.env` file. |
+| `src/featherflap/logger.py` | Central logging configuration with runtime toggles for error/warning/info/debug streams. |
+| `scripts/` | Command-line utilities that probe individual peripherals (UPS, I²C bus, sensors, cameras, PIR, RGB LED). Useful for bench diagnostics without running the web stack. |
+| `test_files/` | Legacy one-off experiments retained for reference (older prototypes, oscilloscope captures, etc.). Not part of the active toolchain but occasionally helpful during hardware debugging. |
+| `tests/` | Pytest suite covering application boot, dependency guards, and configuration parsing. Read `tests/README.md` for execution tips. |
+| `pyproject.toml` | Project metadata, dependencies, entry points (`featherflap` CLI), and the optional `[project.optional-dependencies.hardware]` extras set for Raspberry Pi deployments. |
+| `README.md`, `AGENTS.md` | End-user and automation-agent documentation respectively. |
 
-The diagnostics server provides:
+### Runtime Overview
 
-- A web dashboard at `/` with buttons to run individual hardware checks or the full suite.
-- JSON endpoints under `/api/tests` so the hardware verification workflow can be automated or integrated into other tools.
-- Graceful fallbacks when optional libraries (e.g. `picamera2`, `RPi.GPIO`) are not installed or hardware is disconnected.
-- Real-time sensor snapshots at `/api/status/environment` (AHT20 + BMP280) and `/api/status/ups` (Seengreat Pi Zero UPS HAT (B) telemetry).
-- USB camera capture endpoints at `/api/camera/frame` (single JPEG) and `/api/camera/stream` (MJPEG preview) for quick visual checks.
+Once installed, the diagnostics server provides:
+
+- A browser dashboard (`GET /`) to orchestrate individual tests or run the full suite.
+- JSON metadata (`GET /api/tests`) suitable for external monitoring or CI pipelines.
+- Per-test execution (`POST /api/tests/{id}`) and bulk execution (`POST /api/tests/run-all`) endpoints.
+- Near-real-time status feeds for sensors and power systems:
+  - `/api/status/environment` – temperature, humidity, and pressure snapshots from the AHT20 + BMP280 combo board.
+  - `/api/status/ups` – INA219 bus voltage, shunt drop, computed current, and power from the Seengreat UPS.
+- USB camera helpers: `/api/camera/frame` for a single JPEG capture and `/api/camera/stream` for MJPEG previewing.
+
+Every route degrades gracefully when optional dependencies are absent (for example if `picamera2` is not installed on a development machine) and reports `SKIPPED` rather than failing outright.
+
+### Operating Modes
+
+FeatherFlap now supports **two mutually-exclusive modes**:
+
+- **Test mode (`mode=test`, default):** the server prioritises diagnostics. All hardware tests are available and multiple camera operations can run concurrently. This is the mode to use during bench validation or troubleshooting.
+- **Run mode (`mode=run`):** the system pivots to production behaviour. Motion-triggered recording, sleep scheduling, and live camera streaming coexist, but diagnostics that require camera access are limited. Run and test modes cannot run simultaneously—the CLI enforces this by acquiring a mode lock.
+
+Switch modes via configuration (`FEATHERFLAP_MODE`) or the CLI:
+
+```bash
+# Start the server directly in run mode
+featherflap serve --mode run
+
+# Revert to diagnostics mode
+featherflap serve --mode test
+```
+
+If a process is already running in the opposite mode you will receive a descriptive error; stop the other instance before switching.
 
 ---
 
@@ -110,13 +153,31 @@ The command above launches Uvicorn via the packaged CLI. By default it reads env
 - `FEATHERFLAP_HOST`, `FEATHERFLAP_PORT` – network binding.
 - `FEATHERFLAP_ALLOWED_ORIGINS` – JSON list for CORS configuration.
 - `FEATHERFLAP_I2C_BUS_ID` – Raspberry Pi I²C bus (default `1`).
-- `FEATHERFLAP_UPTIME_I2C_ADDRESSES` – JSON list of UPS telemetry addresses. Legacy defaults map to the PiZ-UpTime HAT (`[72, 73, 75]`, i.e. 0x48/0x49/0x4B); override with the Seengreat module’s INA219/HM1160 address set (typically `0x40`) after confirming with `i2cdetect`.
+- `FEATHERFLAP_UPTIME_I2C_ADDRESSES` – JSON list of UPS telemetry addresses (defaults to `[64]`, i.e. `0x40` for the Seengreat INA219).
+- `FEATHERFLAP_UPTIME_SHUNT_RESISTANCE_OHMS` – shunt resistor value used to derive current from the INA219 (default `0.01` Ω).
 - `FEATHERFLAP_AHT20_I2C_ADDRESS` – AHT20 humidity/temperature sensor address (default `0x38`).
 - `FEATHERFLAP_BMP280_I2C_ADDRESS` – BMP280 barometric pressure sensor address (default `0x76`).
 - `FEATHERFLAP_PIR_PINS` and `FEATHERFLAP_RGB_LED_PINS` – BCM pin configuration for motion sensors and the RGB LED.
 - `FEATHERFLAP_LOG_ERROR_ENABLED`, `FEATHERFLAP_LOG_WARNING_ENABLED`, `FEATHERFLAP_LOG_INFO_ENABLED`, `FEATHERFLAP_LOG_DEBUG_ENABLED` – toggle individual logging categories (errors, warnings, information, debug). Errors, warnings, and information logs are enabled by default; debug logs are opt-in.
 
 Logs are emitted through a central `featherflap` logger and written to standard error with timestamps. Enable or disable each category independently by setting the flags above to `true`/`false`. For example, `FEATHERFLAP_LOG_DEBUG_ENABLED=true` surfaces fine-grained diagnostic messages without altering the other categories.
+
+### Configuration reference
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `FEATHERFLAP_HOST` / `FEATHERFLAP_PORT` | `0.0.0.0` / `8000` | Bind address and port for the FastAPI diagnostics server. |
+| `FEATHERFLAP_ALLOWED_ORIGINS` | `[*]` | JSON list of origins allowed to access the API (CORS). |
+| `FEATHERFLAP_I2C_BUS_ID` | `1` | Raspberry Pi I²C bus used for sensors and the UPS. |
+| `FEATHERFLAP_UPTIME_I2C_ADDRESSES` | `[64]` (`0x40`) | INA219 telemetry addresses. Add more if your board exposes extra devices. |
+| `FEATHERFLAP_UPTIME_SHUNT_RESISTANCE_OHMS` | `0.01` | Shunt resistor value (Ω) used to compute current/power from the INA219 readings. |
+| `FEATHERFLAP_AHT20_I2C_ADDRESS` / `FEATHERFLAP_BMP280_I2C_ADDRESS` | `0x38` / `0x76` | Addresses for the environmental sensor combo board. |
+| `FEATHERFLAP_CAMERA_DEVICE` | `0` | Default V4L2 device index for USB camera diagnostics. Set to `null` to skip. |
+| `FEATHERFLAP_PIR_PINS` | `[17, 27]` | PIR motion sensor GPIO pins (BCM numbering). Accepts comma/space-separated strings or JSON. |
+| `FEATHERFLAP_RGB_LED_PINS` | `(24, 23, 18)` | RGB LED GPIO triplet in the order (red, green, blue). |
+| `FEATHERFLAP_LOG_*_ENABLED` | errors/warnings/info=`true`, debug=`false` | Fine-grained logging toggles controlling which severities are emitted. |
+
+You can supply these values via exported environment variables, a `.env` file placed in the project root, or direct Pydantic overrides when instantiating `AppSettings` in custom tooling.
 
 ### Logging
 
@@ -132,7 +193,7 @@ Visit `http://<raspberry-pi-ip>:8000/` in a browser on the same network to acces
 Useful API routes once the server is running:
 
 - `GET /api/status/environment` — current readings from the AHT20 + BMP280 combo board.
-- `GET /api/status/ups` — live telemetry from the Seengreat Pi Zero UPS HAT (B), exposing INA219-derived voltage/current and pack temperature data.
+- `GET /api/status/ups` — live telemetry from the Seengreat Pi Zero UPS HAT (B), exposing INA219-derived bus voltage, shunt drop, and computed current/power.
 - `GET /api/camera/frame` — capture a single JPEG frame from the configured USB camera.
 - `GET /api/camera/stream` — MJPEG stream suitable for browser previews when validating focus/FOV.
 
@@ -164,7 +225,7 @@ The repo now ships standalone scripts that exercise each peripheral without brin
 
 ```bash
 python scripts/test_i2c_bus.py                # Verify the I2C device node is reachable
-python scripts/test_ups.py --addresses 0x40   # Check Seengreat UPS telemetry (override if your INA219 address differs)
+python scripts/test_ups.py --addresses 0x40 --shunt-ohms 0.01   # Check Seengreat UPS telemetry (override if addresses/ohms differ)
 python scripts/test_environmental.py          # Read AHT20 + BMP280 values once
 python scripts/test_picamera.py               # Spin up the CSI camera via Picamera2
 python scripts/test_usb_camera.py --output frame.jpg  # Capture a JPEG from the USB camera
@@ -178,6 +239,33 @@ Refer to [scripts/README.md](scripts/README.md) for a script-by-script feature t
 
 > **Note**  
 > The I2C-dependent scripts (`test_environmental.py`, `test_ups.py`, `test_i2c_bus.py`) require the system I2C interface (`dtparam=i2c_arm=on` in `/boot/firmware/config.txt`, or enable it via `sudo raspi-config`) plus either `python3-smbus` from apt or the `smbus2` wheel. If you see “smbus/smbus2 library is not installed”, install the package with `sudo apt install python3-smbus` (or `pip install smbus2` inside your virtualenv).
+
+---
+
+## Integrating the Diagnostics in Your Workflow
+
+There are several ways to consume the diagnostics once the hardware is deployed:
+
+- **Browser-based health checks:** Point a desktop or mobile browser at `http://<pi>:8000/` while standing near the bird house. Kick off `Run full suite` and watch results stream in within a few seconds.
+- **Command-line automation:** Use `curl` or `httpie` from an SSH session to hit `/api/tests/run-all` and parse the JSON for alerting. The overall status is derived from the highest-severity result (`error` > `warning` > `skipped` > `ok`).
+- **Python embedding:** Import `featherflap.hardware` in your own scripts to run selected diagnostics. Example: `from featherflap.hardware.tests import SeengreatUPSTest; result = SeengreatUPSTest().run()`.
+- **CI regression tests:** On development machines without hardware, run `pytest -vv -r a`. Hardware-dependent tests mark themselves as `SKIPPED`, so your continuous integration job still produces a green build while reminding reviewers which components were absent.
+- **Scheduled watchdogs:** Combine `cron` with the CLI scripts (`scripts/test_*.py`) or the REST API to log UPS metrics periodically, then ingest the data into your observability stack.
+
+The project is intentionally lightweight—no database or background workers—so you can embed it alongside other services on the Pi or wrap it in systemd/pm2 containers as needed.
+
+---
+
+## Run Mode Behaviour
+
+When `FEATHERFLAP_MODE=run` (or `featherflap serve --mode run`), the server augments its diagnostics with production automation:
+
+- **Motion-triggered recording:** PIR sensors are polled every `FEATHERFLAP_MOTION_POLL_INTERVAL_SECONDS`. A trigger reserves the camera, captures up to `FEATHERFLAP_RECORDING_MAX_SECONDS` of video using the configured resolution (`FEATHERFLAP_CAMERA_RECORD_WIDTH` × `FEATHERFLAP_CAMERA_RECORD_HEIGHT`) and frame rate, and stores the clip under `FEATHERFLAP_RECORDINGS_PATH` in date-based folders. Finished files are optionally mirrored to `FEATHERFLAP_NETWORK_EXPORT_PATH` for off-device archival.
+- **Camera serialization:** A dedicated coordinator prevents simultaneous camera operations. Live streaming and still captures return HTTP 423 (Locked) while a recording is running, fulfilling the “only one feed at a time” requirement.
+- **Sleep windows:** Provide `FEATHERFLAP_SLEEP_WINDOWS` (e.g. `["22:00-06:00", "13:00-14:00"]`) to suspend motion polling during quiet hours and conserve power. The controller automatically resumes afterwards.
+- **Status visibility:** Query `GET /api/run/status` to inspect whether a recording is active, which component currently holds the camera lock, and when the last capture finished.
+
+Diagnostics continue to operate in run mode—non-conflicting tests remain available—while camera-centric diagnostics are hidden to keep the recording pipeline stable.
 
 ---
 
@@ -217,11 +305,11 @@ In effect, the system is intended to live inside (or adjacent to) a birdhouse, m
 
 - **Smart power-path management:** TPS61088 + ETA6003 combo provides seamless switchover between external supply, Li-ion cell, and boosted 5 V output so the Pi never browns out.
 - **Solar-ready charging:** CN3791 MPPT controller accepts 5 V–24 V photovoltaic input for efficient solar harvesting—match the panel voltage/current to your locale and battery size.
-- **Real-time telemetry:** INA219 current/voltage monitor and HM1160 fuel gauge expose pack voltage, current draw, and state-of-charge via I²C. Expect to see an INA219 at `0x40` alongside an additional fuel-gauge address—confirm the exact values with `sudo i2cdetect -y 1`.
+- **Real-time telemetry:** The onboard INA219 monitor exposes bus voltage and current draw over I²C. Expect to see it at `0x40`; some revisions also surface a secondary HM1160 fuel gauge—probe with `sudo i2cdetect -y 1` if you plan to integrate it.
 - **Field diagnostics:** Onboard LED fuel gauge mirrors the telemetry so you can quickly check the charge level even when the Pi is offline.
 - **Battery safeguards:** Integrated protection IC manages safe charge/discharge envelopes—still observe the recommended cell capacity and temperature range from Seengreat’s documentation.
 
-Update the `FEATHERFLAP_UPTIME_I2C_ADDRESSES` setting (or `scripts/test_ups.py --addresses ...`) to match the discovered addresses so the diagnostics polls the correct devices.
+Update the `FEATHERFLAP_UPTIME_I2C_ADDRESSES` setting (and `FEATHERFLAP_UPTIME_SHUNT_RESISTANCE_OHMS` if your board uses a different shunt) so the diagnostics poll and scale telemetry correctly.
 
 ---
 
@@ -313,10 +401,12 @@ def safe_shutdown():
     pass
 
 while True:
-    volt, curr, pct = read_ups_metrics()
+    metrics = read_ups_metrics()  # Expected keys: bus_voltage_v, current_ma, power_mw, ...
+    volt = metrics["bus_voltage_v"]
+    curr_a = (metrics.get("current_ma") or 0) / 1000.0
     temp, hum, light = read_environment()
-    print(f"UPS: {volt:.2f}V {curr:.2f}A {pct}% | Env: {temp}C {hum}% L={light}")
-    if pct < 10 or volt < 3.0:
+    print(f"UPS: {volt:.2f}V {curr_a:.2f}A | Env: {temp}C {hum}% L={light}")
+    if volt < 4.8:
         safe_shutdown()
     time.sleep(10)
 ```

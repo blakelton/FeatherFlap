@@ -1,32 +1,19 @@
-"""Utilities for interacting with the PiZ-UpTime UPS HAT."""
+"""Utilities for interacting with the Seengreat Pi Zero UPS HAT (B)."""
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 from ..logger import get_logger
 from .i2c import SMBusNotAvailable, open_bus
 
-ADC_CHANNEL_BITS = {
-    "vin": 0b11000001,  # Channel 0 (AIN0)
-    "vout": 0b11010001,  # Channel 1 (AIN1)
-    "vbat": 0b11100001,  # Channel 2 (AIN2)
-    "temp": 0b11110001,  # Channel 3 (AIN3)
-}
-ADC_MAX_READING = 2047.0
-ADC_VREF = 6.144
-CONFIG_REGISTER = 0x01
-CONVERSION_REGISTER = 0x00
-WORD_LOW_MASK = 0xFF
-WORD_HIGH_MASK = 0xFFF0
-WORD_LOW_SHIFT = 8
-WORD_HIGH_SHIFT = 8
-CONVERSION_RESULT_SHIFT = 4
-CHANNEL_SETTLE_SECONDS = 0.003
-TEMPERATURE_OFFSET_VOLTAGE = 4.0
-TEMPERATURE_SCALE = 0.0432
+INA219_REG_CONFIG = 0x00
+INA219_REG_SHUNT_VOLTAGE = 0x01
+INA219_REG_BUS_VOLTAGE = 0x02
+
+INA219_BUS_VOLTAGE_LSB = 0.004  # 4 mV
+INA219_SHUNT_VOLTAGE_LSB = 0.00001  # 10 µV
 
 logger = get_logger(__name__)
 
@@ -36,68 +23,104 @@ class UPSReadings:
     """Structured response returned when the UPS responds successfully."""
 
     address: int
-    vin: float
-    vout: float
-    vbat: float
-    temperature_c: float
+    bus_voltage_v: float
+    shunt_voltage_mv: Optional[float] = None
+    current_ma: Optional[float] = None
+    power_mw: Optional[float] = None
 
     def to_dict(self) -> Dict[str, float | str]:
-        return {
+        payload: Dict[str, float | str] = {
             "address": hex(self.address),
-            "vin": round(self.vin, 3),
-            "vout": round(self.vout, 3),
-            "vbat": round(self.vbat, 3),
-            "temperature_c": round(self.temperature_c, 2),
+            "bus_voltage_v": round(self.bus_voltage_v, 3),
         }
+        if self.shunt_voltage_mv is not None:
+            payload["shunt_voltage_mv"] = round(self.shunt_voltage_mv, 3)
+        if self.current_ma is not None:
+            payload["current_ma"] = round(self.current_ma, 2)
+        if self.power_mw is not None:
+            payload["power_mw"] = round(self.power_mw, 2)
+        return payload
 
 
-def _read_channel_values(bus, address: int) -> Dict[str, float]:
-    values: Dict[str, float] = {}
-    for name, cfg in ADC_CHANNEL_BITS.items():
-        bus.write_byte_data(address, CONFIG_REGISTER, cfg)
-        time.sleep(CHANNEL_SETTLE_SECONDS)
-        raw = bus.read_word_data(address, CONVERSION_REGISTER)
-        scaled = (
-            ((raw & WORD_LOW_MASK) << WORD_LOW_SHIFT)
-            | ((raw & WORD_HIGH_MASK) >> WORD_HIGH_SHIFT)
-        ) >> CONVERSION_RESULT_SHIFT
-        voltage = (scaled / ADC_MAX_READING) * ADC_VREF
-        values[name] = voltage
-    logger.debug("Raw UPS ADC values at address %s: %s", hex(address), values)
-    return values
+def _read_word_be(bus, address: int, register: int) -> int:
+    """Read a big-endian 16-bit register from the INA219."""
+
+    raw = bus.read_word_data(address, register)
+    value = ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF)
+    logger.debug("Read register 0x%02X from 0x%X: 0x%04X", register, address, value)
+    return value
 
 
-def read_ups(bus_id: int, addresses: Iterable[int]) -> UPSReadings:
-    """Attempt to read the UPS telemetry from the provided I²C addresses."""
+def _read_signed_word_be(bus, address: int, register: int) -> int:
+    value = _read_word_be(bus, address, register)
+    if value & 0x8000:
+        value -= 0x10000
+    return value
+
+
+def _read_ina219(bus, address: int, shunt_resistance_ohms: float) -> UPSReadings:
+    # Validate device by reading the config register; failure raises OSError.
+    _ = _read_word_be(bus, address, INA219_REG_CONFIG)
+
+    bus_voltage_raw = _read_word_be(bus, address, INA219_REG_BUS_VOLTAGE)
+    bus_voltage_reg = (bus_voltage_raw >> 3) & 0x1FFF
+    bus_voltage_v = bus_voltage_reg * INA219_BUS_VOLTAGE_LSB
+
+    shunt_voltage_raw = _read_signed_word_be(bus, address, INA219_REG_SHUNT_VOLTAGE)
+    shunt_voltage_v = shunt_voltage_raw * INA219_SHUNT_VOLTAGE_LSB
+    shunt_voltage_mv = shunt_voltage_v * 1000.0
+
+    current_ma: Optional[float] = None
+    power_mw: Optional[float] = None
+    if shunt_resistance_ohms > 0:
+        current_ma = shunt_voltage_v / shunt_resistance_ohms * 1000.0
+        power_mw = bus_voltage_v * current_ma
+
+    return UPSReadings(
+        address=address,
+        bus_voltage_v=bus_voltage_v,
+        shunt_voltage_mv=shunt_voltage_mv,
+        current_ma=current_ma,
+        power_mw=power_mw,
+    )
+
+
+def read_ups(bus_id: int, addresses: Iterable[int], shunt_resistance_ohms: float = 0.01) -> UPSReadings:
+    """Attempt to read UPS telemetry from the provided I²C addresses."""
 
     address_attempts: List[int] = list(dict.fromkeys(addresses))
     if not address_attempts:
         logger.error("UPS read requested without addresses")
         raise ValueError("At least one UPS I²C address must be provided.")
 
-    logger.debug("Attempting UPS read on bus %s for addresses %s", bus_id, [hex(addr) for addr in address_attempts])
+    logger.debug(
+        "Attempting UPS read on bus %s for addresses %s (shunt=%.5fΩ)",
+        bus_id,
+        [hex(addr) for addr in address_attempts],
+        shunt_resistance_ohms,
+    )
     try:
         with open_bus(bus_id) as bus:
             for address in address_attempts:
                 try:
-                    values = _read_channel_values(bus, address)
+                    readings = _read_ina219(bus, address, shunt_resistance_ohms)
                 except OSError as exc:
                     logger.debug("UPS did not respond at address %s: %s", hex(address), exc)
                     continue
-                temp_c = (TEMPERATURE_OFFSET_VOLTAGE - values["temp"]) / TEMPERATURE_SCALE
-                logger.info("UPS responded at address %s", hex(address))
-                return UPSReadings(
-                    address=address,
-                    vin=values["vin"],
-                    vout=values["vout"],
-                    vbat=values["vbat"],
-                    temperature_c=temp_c,
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Unexpected INA219 read failure at %s: %s", hex(address), exc)
+                    continue
+                logger.info(
+                    "UPS responded at address %s (bus=%.2fV current=%s)",
+                    hex(readings.address),
+                    readings.bus_voltage_v,
+                    f"{readings.current_ma:.1f}mA" if readings.current_ma is not None else "n/a",
                 )
+                return readings
     except SMBusNotAvailable:
         logger.warning("SMBus not available while reading UPS")
         raise
     except Exception as exc:  # pragma: no cover - defensive
-        # Propagate as runtime error to the caller for uniform handling.
         logger.error("Unexpected error during UPS read: %s", exc)
         raise RuntimeError(f"Unexpected error reading UPS: {exc}") from exc
 
