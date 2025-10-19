@@ -24,3 +24,14 @@ This directory contains the automated regression tests for the FeatherFlap diagn
    ```
 
 On Raspberry Pi hardware without optional dependencies (Picamera2, OpenCV, RPi.GPIO, etc.), affected checks are marked as `skipped` rather than failing. Run the tests locally to catch regressions quickly; run them on-device when validating the hardware paths.
+
+## Getting More Detail from Pytest
+
+- Append `-vv` for verbose function-level output, and `-r a` to see a summary of all outcomes (passed, skipped, xfailed, xpassed):
+  ```bash
+  python -m pytest -vv -r a
+  ```
+- Combine with `--maxfail=1` if you want pytest to stop at the first failure while still reporting prior results:
+  ```bash
+  python -m pytest -vv -r a --maxfail=1
+  ```

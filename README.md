@@ -152,6 +152,12 @@ python -m pytest
 
 If optional hardware dependencies are missing locally, the diagnostics gracefully mark the corresponding tests as `skipped`. Run the suite on a development machine to ensure the FastAPI app builds, and on the Raspberry Pi to validate the full stack. See [tests/README.md](tests/README.md) for a breakdown of what each test covers.
 
+Need more detailed output? Add `-vv -r a` to list every test and its result:
+
+```bash
+python -m pytest -vv -r a
+```
+
 ### Manual hardware validation scripts
 
 The repo now ships standalone scripts that exercise each peripheral without bringing up the FastAPI server. Activate your virtual environment first, make sure I2C is enabled (`sudo raspi-config nonint do_i2c 0` or add `dtparam=i2c_arm=on` to `/boot/firmware/config.txt` on Raspberry Pi OS Bookworm, then reboot), then run:
