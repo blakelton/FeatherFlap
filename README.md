@@ -93,6 +93,12 @@ On the Raspberry Pi with peripherals connected, install the optional hardware ex
 pip install -e .[hardware]
 ```
 
+If you plan to run the automated test suite, install pytest (it isn’t bundled with the editable install):
+
+```bash
+pip install pytest
+```
+
 ### Run the diagnostics server
 
 ```bash
@@ -144,7 +150,7 @@ uvicorn featherflap.server.app:create_application --factory --host 0.0.0.0 --por
 python -m pytest
 ```
 
-If optional hardware dependencies are missing locally, the diagnostics gracefully mark the corresponding tests as `skipped`. Run the suite on a development machine to ensure the FastAPI app builds, and on the Raspberry Pi to validate the full stack.
+If optional hardware dependencies are missing locally, the diagnostics gracefully mark the corresponding tests as `skipped`. Run the suite on a development machine to ensure the FastAPI app builds, and on the Raspberry Pi to validate the full stack. See [tests/README.md](tests/README.md) for a breakdown of what each test covers.
 
 ### Manual hardware validation scripts
 
@@ -162,6 +168,7 @@ python scripts/test_rgb_led.py --rounds 3     # Cycle the RGB LED channels sever
 
 Each script honours the `FEATHERFLAP_*` configuration variables and exposes CLI flags so you can override bus numbers, GPIO pins, or camera options per run.
 For the UPS module specifically, supply the INA219/HM1160 addresses (`FEATHERFLAP_UPTIME_I2C_ADDRESSES` or `--addresses`) that you discovered with `i2cdetect` so telemetry comes from the Seengreat board.
+Refer to [scripts/README.md](scripts/README.md) for a script-by-script feature table and additional usage tips.
 
 > **Note**  
 > The I2C-dependent scripts (`test_environmental.py`, `test_ups.py`, `test_i2c_bus.py`) require the system I2C interface (`dtparam=i2c_arm=on` in `/boot/firmware/config.txt`, or enable it via `sudo raspi-config`) plus either `python3-smbus` from apt or the `smbus2` wheel. If you see “smbus/smbus2 library is not installed”, install the package with `sudo apt install python3-smbus` (or `pip install smbus2` inside your virtualenv).
