@@ -72,17 +72,43 @@ def main() -> int:
         print(f"ERROR: Unexpected failure reading UPS: {exc}", file=sys.stderr)
         return 1
 
-    data = readings.to_dict()
-    print("UPS telemetry:")
-    preferred = ("address", "bus_voltage_v", "shunt_voltage_mv", "current_ma", "power_mw")
-    printed: set[str] = set()
-    for key in preferred:
-        if key in data:
-            print(f"  {key}: {data[key]}")
-            printed.add(key)
-    for key, value in data.items():
-        if key not in printed:
-            print(f"  {key}: {value}")
+    print()
+    print(f"UPS telemetry @ address {hex(readings.address)}")
+    print("-" * 36)
+    print(f"{'I2C bus':<18}: {bus_id}")
+    print(f"{'Bus voltage':<18}: {readings.bus_voltage_v:>8.3f} V")
+
+    if readings.shunt_voltage_mv is not None:
+        print(f"{'Shunt voltage':<18}: {readings.shunt_voltage_mv:+8.3f} mV")
+    else:
+        print(f"{'Shunt voltage':<18}: n/a")
+
+    flow_labels = {
+        "discharging": "Supplying load",
+        "charging": "Charging battery",
+        "idle": "Near zero",
+        "unknown": "Current unavailable",
+    }
+
+    if readings.current_ma is not None:
+        flow = flow_labels.get(readings.flow, "Current unavailable")
+        current_value = abs(readings.current_ma)
+        print(f"{'Current':<18}: {current_value:>8.2f} mA ({flow})")
+    else:
+        print(f"{'Current':<18}: n/a (set shunt value)")
+
+    if readings.power_mw is not None and readings.current_ma is not None:
+        direction = "to load" if readings.flow == "discharging" else "into battery" if readings.flow == "charging" else "minimal flow"
+        power_w = abs(readings.power_mw) / 1000.0
+        print(f"{'Power':<18}: {power_w:>8.3f} W ({direction})")
+    elif readings.power_mw is not None:
+        power_w = readings.power_mw / 1000.0
+        print(f"{'Power':<18}: {power_w:>8.3f} W")
+    else:
+        print(f"{'Power':<18}: n/a")
+
+    print("-" * 36)
+    print()
     return 0
 
 

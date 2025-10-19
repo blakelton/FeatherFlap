@@ -15,6 +15,8 @@ INA219_REG_BUS_VOLTAGE = 0x02
 INA219_BUS_VOLTAGE_LSB = 0.004  # 4 mV
 INA219_SHUNT_VOLTAGE_LSB = 0.00001  # 10 µV
 
+CURRENT_IDLE_THRESHOLD_MA = 1.0
+
 logger = get_logger(__name__)
 
 
@@ -27,6 +29,7 @@ class UPSReadings:
     shunt_voltage_mv: Optional[float] = None
     current_ma: Optional[float] = None
     power_mw: Optional[float] = None
+    flow: str = "unknown"
 
     def to_dict(self) -> Dict[str, float | str]:
         payload: Dict[str, float | str] = {
@@ -39,6 +42,7 @@ class UPSReadings:
             payload["current_ma"] = round(self.current_ma, 2)
         if self.power_mw is not None:
             payload["power_mw"] = round(self.power_mw, 2)
+        payload["flow"] = self.flow
         return payload
 
 
@@ -56,6 +60,16 @@ def _read_signed_word_be(bus, address: int, register: int) -> int:
     if value & 0x8000:
         value -= 0x10000
     return value
+
+
+def _classify_current(current_ma: Optional[float]) -> str:
+    if current_ma is None:
+        return "unknown"
+    if current_ma > CURRENT_IDLE_THRESHOLD_MA:
+        return "discharging"
+    if current_ma < -CURRENT_IDLE_THRESHOLD_MA:
+        return "charging"
+    return "idle"
 
 
 def _read_ina219(bus, address: int, shunt_resistance_ohms: float) -> UPSReadings:
@@ -76,12 +90,15 @@ def _read_ina219(bus, address: int, shunt_resistance_ohms: float) -> UPSReadings
         current_ma = shunt_voltage_v / shunt_resistance_ohms * 1000.0
         power_mw = bus_voltage_v * current_ma
 
+    flow = _classify_current(current_ma)
+
     return UPSReadings(
         address=address,
         bus_voltage_v=bus_voltage_v,
         shunt_voltage_mv=shunt_voltage_mv,
         current_ma=current_ma,
         power_mw=power_mw,
+        flow=flow,
     )
 
 
@@ -110,11 +127,17 @@ def read_ups(bus_id: int, addresses: Iterable[int], shunt_resistance_ohms: float
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("Unexpected INA219 read failure at %s: %s", hex(address), exc)
                     continue
+                flow = readings.flow.replace("-", " ")
+                if readings.current_ma is not None:
+                    display_current = f"{abs(readings.current_ma):.1f}mA"
+                else:
+                    display_current = "n/a"
                 logger.info(
-                    "UPS responded at address %s (bus=%.2fV current=%s)",
+                    "UPS responded at address %s (bus=%.2fV current=%s, %s)",
                     hex(readings.address),
                     readings.bus_voltage_v,
-                    f"{readings.current_ma:.1f}mA" if readings.current_ma is not None else "n/a",
+                    display_current,
+                    flow,
                 )
                 return readings
     except SMBusNotAvailable:
