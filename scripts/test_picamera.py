@@ -8,7 +8,7 @@ import sys
 import time
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = argparse.ArgumentParser(
         description=(
             "Initialise Picamera2, start a preview capture, and shut it down to verify CSI camera wiring."
@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="How long to run the camera preview before shutting down (default: 1 second).",
     )
-    return parser.parse_args()
+    return parser, parser.parse_args()
 
 
 def main() -> int:
@@ -30,7 +30,7 @@ def main() -> int:
         print("ERROR: Picamera2 is not installed. Install python3-picamera2 on Raspberry Pi OS.", file=sys.stderr)
         return 2
 
-    args = parse_args()
+    _parser, args = parse_args()
     duration = max(0.0, args.preview_seconds)
 
     camera: Picamera2

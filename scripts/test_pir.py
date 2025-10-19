@@ -16,7 +16,7 @@ from featherflap.config import get_settings
 from _args import parse_int_sequence
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = argparse.ArgumentParser(
         description="Poll the configured PIR GPIO inputs and print their HIGH/LOW state."
     )
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Seconds to wait between samples (default: 0.5).",
     )
-    return parser.parse_args()
+    return parser, parser.parse_args()
 
 
 def main() -> int:
@@ -48,14 +48,13 @@ def main() -> int:
         print("ERROR: RPi.GPIO is not installed. Install python3-rpi.gpio on Raspberry Pi OS.", file=sys.stderr)
         return 2
 
-    args = parse_args()
+    parser, args = parse_args()
     settings = get_settings()
     if args.pins:
         try:
             pins = parse_int_sequence(args.pins, "GPIO number")
         except argparse.ArgumentTypeError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 2
+            parser.error(str(exc))
     else:
         pins = list(settings.pir_pins)
     if not pins:

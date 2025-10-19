@@ -21,7 +21,7 @@ from featherflap.hardware.camera import (
 )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = argparse.ArgumentParser(
         description=(
             "Capture a single JPEG frame from the USB camera using OpenCV. "
@@ -57,11 +57,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path to save the captured frame. If omitted, only metadata prints to stdout.",
     )
-    return parser.parse_args()
+    return parser, parser.parse_args()
 
 
 def main() -> int:
-    args = parse_args()
+    _parser, args = parse_args()
     settings = get_settings()
     device = (
         args.device

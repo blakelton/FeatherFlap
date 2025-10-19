@@ -15,7 +15,7 @@ from featherflap.hardware.power import UPSReadings, read_ups
 from _args import parse_int_sequence
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = argparse.ArgumentParser(
         description="Read the PiZ-UpTime UPS telemetry once and print the decoded values."
     )
@@ -35,19 +35,18 @@ def parse_args() -> argparse.Namespace:
             "Defaults to FEATHERFLAP_UPTIME_I2C_ADDRESSES or built-in addresses."
         ),
     )
-    return parser.parse_args()
+    return parser, parser.parse_args()
 
 
 def main() -> int:
-    args = parse_args()
+    parser, args = parse_args()
     settings = get_settings()
     bus_id = args.bus_id if args.bus_id is not None else settings.i2c_bus_id
     if args.addresses:
         try:
             addresses = parse_int_sequence(args.addresses, "I2C address")
         except argparse.ArgumentTypeError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 2
+            parser.error(str(exc))
     elif settings.uptime_i2c_addresses:
         addresses = list(settings.uptime_i2c_addresses)
     else:

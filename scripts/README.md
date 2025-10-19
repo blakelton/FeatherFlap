@@ -27,3 +27,47 @@ python scripts/test_ups.py --addresses 0x40 0x0b --samples 5
 ```
 
 These helpers are safe to run repeatedly; they close devices and clean up GPIO state when finished.
+
+## Usage Cheatsheet
+
+### `test_i2c_bus.py`
+```bash
+python scripts/test_i2c_bus.py --bus-id 1
+```
+Checks the specified I²C bus (default: `FEATHERFLAP_I2C_BUS_ID`) can be opened via smbus/smbus2.
+
+### `test_ups.py`
+```bash
+python scripts/test_ups.py --bus-id 1 --addresses 0x40 0x0b
+```
+Tries each address in order until the UPS responds, printing VIN/VOUT/VBAT and temperature.
+
+### `test_environmental.py`
+```bash
+python scripts/test_environmental.py --bus-id 1 --aht20-address 0x38 --bmp280-address 0x76
+```
+Reads the AHT20/BMP280 combo once and reports sensor values plus any per-device errors.
+
+### `test_pir.py`
+```bash
+python scripts/test_pir.py --pins 17 27 --samples 5 --interval 0.5
+```
+Cycles through the configured PIR inputs and prints the HIGH/LOW state for each sample.
+
+### `test_rgb_led.py`
+```bash
+python scripts/test_rgb_led.py --pins 24 23 18 --rounds 3 --hold 0.2
+```
+Sequentially toggles each RGB LED GPIO and reports progress, cleaning up pins afterwards.
+
+### `test_picamera.py`
+```bash
+python scripts/test_picamera.py --preview-seconds 3
+```
+Initialises Picamera2, runs a preview for the requested duration, then shuts the camera down.
+
+### `test_usb_camera.py`
+```bash
+python scripts/test_usb_camera.py --device 0 --width 1280 --height 720 --output frame.jpg
+```
+Captures a JPEG frame using OpenCV, prints the byte size, and optionally writes it to disk.

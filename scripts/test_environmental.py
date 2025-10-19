@@ -19,7 +19,7 @@ from featherflap.hardware.i2c import SMBusNotAvailable
 from featherflap.hardware.sensors import EnvironmentSnapshot, read_environment
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = argparse.ArgumentParser(
         description="Read the AHT20 and BMP280 sensors once and print the captured values."
     )
@@ -41,11 +41,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="I2C address for the BMP280 sensor (defaults to FEATHERFLAP_BMP280_I2C_ADDRESS).",
     )
-    return parser.parse_args()
+    return parser, parser.parse_args()
 
 
 def main() -> int:
-    args = parse_args()
+    _parser, args = parse_args()
     settings = get_settings()
     bus_id = args.bus_id if args.bus_id is not None else settings.i2c_bus_id
     aht20_address = (

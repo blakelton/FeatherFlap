@@ -14,7 +14,7 @@ from featherflap.config import get_settings
 from featherflap.hardware.i2c import SMBusNotAvailable, open_bus
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = argparse.ArgumentParser(
         description="Open the configured Raspberry Pi I2C bus to verify the smbus stack and kernel device are available."
     )
@@ -24,11 +24,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="I2C bus number to probe (defaults to FEATHERFLAP_I2C_BUS_ID).",
     )
-    return parser.parse_args()
+    return parser, parser.parse_args()
 
 
 def main() -> int:
-    args = parse_args()
+    _parser, args = parse_args()
     settings = get_settings()
     bus_id = args.bus_id if args.bus_id is not None else settings.i2c_bus_id
 
