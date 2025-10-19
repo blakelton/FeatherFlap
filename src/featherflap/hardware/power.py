@@ -15,7 +15,7 @@ INA219_REG_BUS_VOLTAGE = 0x02
 INA219_BUS_VOLTAGE_LSB = 0.004  # 4 mV
 INA219_SHUNT_VOLTAGE_LSB = 0.00001  # 10 µV
 
-CURRENT_IDLE_THRESHOLD_MA = 1.0
+CURRENT_IDLE_THRESHOLD_MA = 10.0
 
 logger = get_logger(__name__)
 
@@ -65,10 +65,12 @@ def _read_signed_word_be(bus, address: int, register: int) -> int:
 def _classify_current(current_ma: Optional[float]) -> str:
     if current_ma is None:
         return "unknown"
-    if current_ma > CURRENT_IDLE_THRESHOLD_MA:
-        return "discharging"
-    if current_ma < -CURRENT_IDLE_THRESHOLD_MA:
+    if abs(current_ma) <= CURRENT_IDLE_THRESHOLD_MA:
+        return "idle"
+    if current_ma > 0:
         return "charging"
+    # Negative current means energy is leaving the battery towards the load.
+    return "discharging"
     return "idle"
 
 
@@ -132,12 +134,18 @@ def read_ups(bus_id: int, addresses: Iterable[int], shunt_resistance_ohms: float
                     display_current = f"{abs(readings.current_ma):.1f}mA"
                 else:
                     display_current = "n/a"
+                flow_descriptions = {
+                    "discharging": "supplying load",
+                    "charging": "charging battery",
+                    "idle": "near zero",
+                    "unknown": "flow unknown",
+                }
                 logger.info(
                     "UPS responded at address %s (bus=%.2fV current=%s, %s)",
                     hex(readings.address),
                     readings.bus_voltage_v,
                     display_current,
-                    flow,
+                    flow_descriptions.get(readings.flow, flow),
                 )
                 return readings
     except SMBusNotAvailable:
