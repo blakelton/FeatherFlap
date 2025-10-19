@@ -51,7 +51,7 @@ The diagnostics server provides:
 - A web dashboard at `/` with buttons to run individual hardware checks or the full suite.
 - JSON endpoints under `/api/tests` so the hardware verification workflow can be automated or integrated into other tools.
 - Graceful fallbacks when optional libraries (e.g. `picamera2`, `RPi.GPIO`) are not installed or hardware is disconnected.
-- Real-time sensor snapshots at `/api/status/environment` (AHT20 + BMP280) and `/api/status/ups` (PiZ-UpTime telemetry).
+- Real-time sensor snapshots at `/api/status/environment` (AHT20 + BMP280) and `/api/status/ups` (Seengreat Pi Zero UPS HAT (B) telemetry).
 - USB camera capture endpoints at `/api/camera/frame` (single JPEG) and `/api/camera/stream` (MJPEG preview) for quick visual checks.
 
 ---
@@ -104,7 +104,7 @@ The command above launches Uvicorn via the packaged CLI. By default it reads env
 - `FEATHERFLAP_HOST`, `FEATHERFLAP_PORT` – network binding.
 - `FEATHERFLAP_ALLOWED_ORIGINS` – JSON list for CORS configuration.
 - `FEATHERFLAP_I2C_BUS_ID` – Raspberry Pi I²C bus (default `1`).
-- `FEATHERFLAP_UPTIME_I2C_ADDRESSES` – JSON list of PiZ-UpTime addresses to probe (defaults to `[72, 73, 75]`, i.e. 0x48/0x49/0x4B).
+- `FEATHERFLAP_UPTIME_I2C_ADDRESSES` – JSON list of UPS telemetry addresses. Legacy defaults map to the PiZ-UpTime HAT (`[72, 73, 75]`, i.e. 0x48/0x49/0x4B); override with the Seengreat module’s INA219/HM1160 address set (typically `0x40`) after confirming with `i2cdetect`.
 - `FEATHERFLAP_AHT20_I2C_ADDRESS` – AHT20 humidity/temperature sensor address (default `0x38`).
 - `FEATHERFLAP_BMP280_I2C_ADDRESS` – BMP280 barometric pressure sensor address (default `0x76`).
 - `FEATHERFLAP_PIR_PINS` and `FEATHERFLAP_RGB_LED_PINS` – BCM pin configuration for motion sensors and the RGB LED.
@@ -126,7 +126,7 @@ Visit `http://<raspberry-pi-ip>:8000/` in a browser on the same network to acces
 Useful API routes once the server is running:
 
 - `GET /api/status/environment` — current readings from the AHT20 + BMP280 combo board.
-- `GET /api/status/ups` — live telemetry from the PiZ-UpTime HAT (voltages and board temperature).
+- `GET /api/status/ups` — live telemetry from the Seengreat Pi Zero UPS HAT (B), exposing INA219-derived voltage/current and pack temperature data.
 - `GET /api/camera/frame` — capture a single JPEG frame from the configured USB camera.
 - `GET /api/camera/stream` — MJPEG stream suitable for browser previews when validating focus/FOV.
 
@@ -152,7 +152,7 @@ The repo now ships standalone scripts that exercise each peripheral without brin
 
 ```bash
 python scripts/test_i2c_bus.py                # Verify the I2C device node is reachable
-python scripts/test_ups.py --addresses 0x48   # Check PiZ-UpTime telemetry on specific addresses
+python scripts/test_ups.py --addresses 0x40   # Check Seengreat UPS telemetry (override if your INA219 address differs)
 python scripts/test_environmental.py          # Read AHT20 + BMP280 values once
 python scripts/test_picamera.py               # Spin up the CSI camera via Picamera2
 python scripts/test_usb_camera.py --output frame.jpg  # Capture a JPEG from the USB camera
@@ -161,6 +161,7 @@ python scripts/test_rgb_led.py --rounds 3     # Cycle the RGB LED channels sever
 ```
 
 Each script honours the `FEATHERFLAP_*` configuration variables and exposes CLI flags so you can override bus numbers, GPIO pins, or camera options per run.
+For the UPS module specifically, supply the INA219/HM1160 addresses (`FEATHERFLAP_UPTIME_I2C_ADDRESSES` or `--addresses`) that you discovered with `i2cdetect` so telemetry comes from the Seengreat board.
 
 > **Note**  
 > The I2C-dependent scripts (`test_environmental.py`, `test_ups.py`, `test_i2c_bus.py`) require the system I2C interface (`dtparam=i2c_arm=on` in `/boot/firmware/config.txt`, or enable it via `sudo raspi-config`) plus either `python3-smbus` from apt or the `smbus2` wheel. If you see “smbus/smbus2 library is not installed”, install the package with `sudo apt install python3-smbus` (or `pip install smbus2` inside your virtualenv).
@@ -196,6 +197,18 @@ In effect, the system is intended to live inside (or adjacent to) a birdhouse, m
 | 9 | Optional IR LED or illumination | Provide illumination (in IR) when it's dark, for the camera | Controlled via GPIO / transistor | Use current-limiting resistor; avoid disturbing the birds |
 | 10 | Optional environmental sensors (e.g. air pressure, sound, CO₂) | Additional data capture | I²C, SPI, or analog | Include only what you need to avoid overcomplexity |
 | 11 | Wiring, connectors, standoffs, screws, enclosure, protective coatings | Mechanical / electrical support | – | Weatherproofing is critical; consider cable glands, sealants |
+
+---
+
+### Seengreat Pi Zero UPS HAT (B) Highlights
+
+- **Smart power-path management:** TPS61088 + ETA6003 combo provides seamless switchover between external supply, Li-ion cell, and boosted 5 V output so the Pi never browns out.
+- **Solar-ready charging:** CN3791 MPPT controller accepts 5 V–24 V photovoltaic input for efficient solar harvesting—match the panel voltage/current to your locale and battery size.
+- **Real-time telemetry:** INA219 current/voltage monitor and HM1160 fuel gauge expose pack voltage, current draw, and state-of-charge via I²C. Expect to see an INA219 at `0x40` alongside an additional fuel-gauge address—confirm the exact values with `sudo i2cdetect -y 1`.
+- **Field diagnostics:** Onboard LED fuel gauge mirrors the telemetry so you can quickly check the charge level even when the Pi is offline.
+- **Battery safeguards:** Integrated protection IC manages safe charge/discharge envelopes—still observe the recommended cell capacity and temperature range from Seengreat’s documentation.
+
+Update the `FEATHERFLAP_UPTIME_I2C_ADDRESSES` setting (or `scripts/test_ups.py --addresses ...`) to match the discovered addresses so the diagnostics polls the correct devices.
 
 ---
 
@@ -243,7 +256,7 @@ In effect, the system is intended to live inside (or adjacent to) a birdhouse, m
 │ GPIO26       (37) [○]               (38) GPIO20 [○]            │
 │ GND          (39) [●]               (40) GPIO21 [○]            │
 └───────────────────────────────────────────────────────────────┘
-Legend: [●] Power/GND · [★] PIR sensors · [♦] RGB LED (R,G,B) · [○] Spare GPIO · [UPS …] PiZ‑UpTime
+Legend: [●] Power/GND · [★] PIR sensors · [♦] RGB LED (R,G,B) · [○] Spare GPIO · [UPS …] Seengreat UPS
 ```
 
 ---
@@ -257,7 +270,7 @@ Legend: [●] Power/GND · [★] PIR sensors · [♦] RGB LED (R,G,B) · [○] S
 5. Wire sensors to the I²C or GPIO pins as described.
 6. Enable UPS output by sliding its switch ON.
 7. Power up the Pi and verify it boots.
-8. Test I²C communication (via `i2cdetect`).
+8. Test I²C communication (via `sudo i2cdetect -y 1`) and confirm the UPS telemetry addresses (e.g. INA219 at `0x40`).
 9. Test sensor readings via scripts.
 10. Simulate power outage and verify the UPS maintains operation.
 11. Verify safe shutdown when battery is low.
