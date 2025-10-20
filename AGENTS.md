@@ -32,7 +32,7 @@ Welcome to FeatherFlap’s collaborative workspace. This guide gives Codex, Clau
 3. **Hardware Layer**:
    - `hardware/base.py` defines `HardwareTest` and `HardwareTestResult`.
    - `hardware/tests.py` implements diagnostic classes for system info, I²C bus, UPS, environment sensors, cameras, PIR, and RGB LED.
-   - `hardware/power.py` (UPS telemetry) and `hardware/sensors.py` (AHT20/BMP280) wrap the Seengreat Pi Zero UPS HAT (B) and environmental sensor combo. The UPS exposes bus voltage/current via an INA219 monitor; some revisions add an HM-series fuel gauge for state-of-charge.
+   - `hardware/battery.py` (learning estimator), `hardware/power.py` (UPS telemetry), and `hardware/sensors.py` (AHT20/BMP280) wrap the Seengreat Pi Zero UPS HAT (B) and environmental sensor combo. The UPS exposes bus voltage/current via an INA219 monitor; the estimator accumulates charge/discharge samples to refine capacity and runtime predictions.
    - Optional hardware-dependent modules guard imports and downgrade failures to `SKIPPED` results when dependencies are absent.
 4. **Web/API Surface**: `server/routes.py` exposes HTML dashboard, JSON diagnostics endpoints, streaming camera routes, and async wrappers around the registry.
 5. **CLI**: `server/cli.py` surfaces `featherflap serve` via Typer and dispatches to Uvicorn’s factory mode.

@@ -20,6 +20,7 @@ The `scripts/` folder hosts command-line helpers for validating each peripheral 
 | `test_picamera.py` | Spin up Picamera2 and display capture stats. | `--preview`, `--resolution`. |
 | `test_usb_camera.py` | Grab a JPEG frame from a USB camera via OpenCV. | `--device`, `--output`. |
 | `manage_usb_cameras.py` | Enable or disable USB (UVC) webcams (temporary until re-enabled). | `--enable`, `--disable`. |
+| `ups_monitor.py` | Continuous UPS polling with adaptive battery learning/logging. | `--interval`, `--duration`, `--capacity-mah`. |
 
 Run any script with `--help` to see full usage options. Example:
 
@@ -84,3 +85,15 @@ sudo python scripts/manage_usb_cameras.py --disable
 sudo python scripts/manage_usb_cameras.py --enable
 ```
 The script can also report current status. Use `--help` for full details.
+
+### `ups_monitor.py`
+```bash
+# Poll the UPS every 60s, logging samples and updating the battery model
+python scripts/ups_monitor.py --interval 60 --capacity-mah 10000
+
+# Run for two hours capturing telemetry
+python scripts/ups_monitor.py --interval 120 --duration 120
+```
+This long-running helper feeds the learning estimator used by `test_ups.py`,
+store samples under `~/.local/share/featherflap/`, and prints a concise log line
+each interval. Press Ctrl+C to stop.

@@ -12,38 +12,10 @@ from _paths import add_project_src_to_path
 add_project_src_to_path()
 
 from featherflap.config import DEFAULT_UPTIME_I2C_ADDRESSES, get_settings
+from featherflap.hardware.battery import BatteryEstimator
 from featherflap.hardware.i2c import SMBusNotAvailable
 from featherflap.hardware.power import UPSReadings, read_ups
 from _args import parse_int_sequence
-
-BATTERY_SOC_CURVE = [
-    (4.20, 100.0),
-    (4.15, 98.0),
-    (4.12, 95.0),
-    (4.10, 93.0),
-    (4.05, 90.0),
-    (4.00, 80.0),
-    (3.95, 72.0),
-    (3.92, 65.0),
-    (3.90, 60.0),
-    (3.87, 55.0),
-    (3.84, 50.0),
-    (3.80, 45.0),
-    (3.78, 40.0),
-    (3.75, 35.0),
-    (3.72, 30.0),
-    (3.70, 27.0),
-    (3.68, 24.0),
-    (3.65, 20.0),
-    (3.60, 15.0),
-    (3.55, 10.0),
-    (3.50, 6.0),
-    (3.45, 3.0),
-    (3.40, 1.0),
-    (3.35, 0.0),
-]
-
-MIN_CURRENT_FOR_RUNTIME_A = 0.05  # 50 mA threshold for timing estimates
 
 
 def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
@@ -116,22 +88,6 @@ def _supports_color(args: argparse.Namespace) -> bool:
     return sys.stdout.isatty()
 
 
-def estimate_state_of_charge(voltage: float) -> float:
-    curve = BATTERY_SOC_CURVE
-    if voltage >= curve[0][0]:
-        return 100.0
-    if voltage <= curve[-1][0]:
-        return 0.0
-    for (v_hi, soc_hi), (v_lo, soc_lo) in zip(curve, curve[1:]):
-        if v_lo <= voltage <= v_hi:
-            span = v_hi - v_lo
-            if span <= 0:
-                return soc_lo
-            fraction = (voltage - v_lo) / span
-            return soc_lo + fraction * (soc_hi - soc_lo)
-    return max(0.0, min(100.0, curve[-1][1]))
-
-
 def format_duration(hours: float) -> str:
     if not math.isfinite(hours) or hours <= 0:
         return "n/a"
@@ -150,33 +106,6 @@ def format_duration(hours: float) -> str:
     if not parts:
         return "~0m"
     return " ".join(parts[:2])
-
-
-def compute_runtime_estimates(
-    readings: UPSReadings,
-    soc_pct: float,
-    capacity_mah: float,
-) -> tuple[float | None, float | None]:
-    if readings.current_ma is None or capacity_mah <= 0:
-        return None, None
-    capacity_ah = capacity_mah / 1000.0
-    net_current_a = readings.current_ma / 1000.0
-    energy_available_ah = capacity_ah * (soc_pct / 100.0)
-    energy_missing_ah = capacity_ah * max(0.0, 1.0 - soc_pct / 100.0)
-
-    time_to_empty = None
-    time_to_full = None
-
-    if readings.flow == "discharging":
-        discharge_current_a = abs(net_current_a)
-        if discharge_current_a >= MIN_CURRENT_FOR_RUNTIME_A and energy_available_ah > 0:
-            time_to_empty = energy_available_ah / discharge_current_a
-    elif readings.flow == "charging":
-        charge_current_a = max(net_current_a, 0.0)
-        if charge_current_a >= MIN_CURRENT_FOR_RUNTIME_A and energy_missing_ah > 0:
-            time_to_full = energy_missing_ah / charge_current_a
-
-    return time_to_empty, time_to_full
 
 
 def main() -> int:
@@ -208,9 +137,19 @@ def main() -> int:
         return 1
 
     palette = Palette(_supports_color(args))
+    estimator = BatteryEstimator()
+    estimate = estimator.record_sample(
+        timestamp=None,
+        voltage_v=readings.bus_voltage_v,
+        current_ma=readings.current_ma,
+        flow=readings.flow,
+        nominal_capacity_mah=args.capacity_mah,
+    )
 
-    soc_pct = estimate_state_of_charge(readings.bus_voltage_v)
-    time_to_empty_hours, time_to_full_hours = compute_runtime_estimates(readings, soc_pct, args.capacity_mah)
+    capacity_mah = estimate.capacity_mah
+    soc_pct = estimate.soc_pct
+    time_to_empty_hours = estimate.time_to_empty_hours
+    time_to_full_hours = estimate.time_to_full_hours
 
     def fmt_label(text: str) -> str:
         raw = f"{text:<18}"
@@ -278,7 +217,20 @@ def main() -> int:
     else:
         print(f"{fmt_label('Power')}: {palette.wrap('n/a', palette.dim)}")
 
-    print(f"{fmt_label('Battery SoC')}: {palette.wrap(f'{soc_pct:>8.1f} %', soc_colour)}")
+    soc_extra_parts = [f"voltage {estimate.voltage_soc_pct:.1f}%"]
+    if estimate.coulomb_soc_pct is not None:
+        soc_extra_parts.append(f"learned {estimate.coulomb_soc_pct:.1f}%")
+    soc_extra = "; ".join(soc_extra_parts)
+    print(f"{fmt_label('Battery SoC')}: {palette.wrap(f'{soc_pct:>8.1f} %', soc_colour)} ({soc_extra})")
+
+    capacity_colour = palette.green if capacity_mah >= args.capacity_mah * 0.95 else palette.yellow
+    if capacity_mah < args.capacity_mah * 0.6:
+        capacity_colour = palette.red
+    print(
+        f"{fmt_label('Capacity est.')}: "
+        f"{palette.wrap(f'{capacity_mah:>8.0f} mAh', capacity_colour)} "
+        f"(nominal {args.capacity_mah:.0f} mAh)"
+    )
 
     if time_to_empty_hours is not None:
         eta = format_duration(time_to_empty_hours)
@@ -288,6 +240,11 @@ def main() -> int:
         print(f"{fmt_label('Est. time to full')}: {palette.wrap(eta, palette.yellow)}")
     if time_to_empty_hours is None and time_to_full_hours is None:
         print(f"{fmt_label('Runtime estimate')}: {palette.wrap('n/a (insufficient current)', palette.dim)}")
+
+    print(
+        f"{fmt_label('History samples')}: "
+        f"{palette.wrap(str(estimate.samples_recorded), palette.cyan)}"
+    )
 
     print(separator)
     print()

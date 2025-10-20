@@ -231,9 +231,10 @@ python scripts/test_picamera.py               # Spin up the CSI camera via Picam
 python scripts/test_usb_camera.py --output frame.jpg  # Capture a JPEG from the USB camera
 python scripts/test_pir.py --samples 5        # Poll PIR sensor pins multiple times
 python scripts/test_rgb_led.py --rounds 3     # Cycle the RGB LED channels several times
+python scripts/ups_monitor.py --interval 60   # Continuously log UPS telemetry and refine battery estimates
 ```
 
-Each script honours the `FEATHERFLAP_*` configuration variables and exposes CLI flags so you can override bus numbers, GPIO pins, or camera options per run.
+Each script honours the `FEATHERFLAP_*` configuration variables and exposes CLI flags so you can override bus numbers, GPIO pins, or camera options per run. The `ups_monitor.py` helper is a long-running loop that records samples every few seconds/minutes; leave it running to feed the adaptive battery estimator used by `test_ups.py` and the diagnostics API.
 For the UPS module specifically, supply the INA219/HM1160 addresses (`FEATHERFLAP_UPTIME_I2C_ADDRESSES` or `--addresses`) that you discovered with `i2cdetect` so telemetry comes from the Seengreat board.
 Refer to [scripts/README.md](scripts/README.md) for a script-by-script feature table and additional usage tips.
 
