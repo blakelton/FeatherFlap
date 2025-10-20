@@ -47,8 +47,8 @@ def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser.add_argument(
         "--capacity-mah",
         type=float,
-        default=10000.0,
-        help="Battery capacity in milliamp-hours (default: 10000 for the Seengreat 10Ah pack).",
+        default=None,
+        help="Battery capacity in milliamp-hours (defaults to FEATHERFLAP_BATTERY_CAPACITY_MAH).",
     )
     parser.add_argument(
         "--no-color",
@@ -123,6 +123,9 @@ def main() -> int:
         addresses = list(DEFAULT_UPTIME_I2C_ADDRESSES)
 
     shunt = args.shunt_ohms if args.shunt_ohms is not None else settings.uptime_shunt_resistance_ohms
+    battery_capacity = (
+        args.capacity_mah if args.capacity_mah is not None else getattr(settings, "battery_capacity_mah", 10000.0)
+    )
 
     try:
         readings: UPSReadings = read_ups(bus_id, addresses, shunt)
@@ -143,7 +146,7 @@ def main() -> int:
         voltage_v=readings.bus_voltage_v,
         current_ma=readings.current_ma,
         flow=readings.flow,
-        nominal_capacity_mah=args.capacity_mah,
+        nominal_capacity_mah=battery_capacity,
     )
 
     capacity_mah = estimate.capacity_mah
@@ -223,13 +226,14 @@ def main() -> int:
     soc_extra = "; ".join(soc_extra_parts)
     print(f"{fmt_label('Battery SoC')}: {palette.wrap(f'{soc_pct:>8.1f} %', soc_colour)} ({soc_extra})")
 
-    capacity_colour = palette.green if capacity_mah >= args.capacity_mah * 0.95 else palette.yellow
-    if capacity_mah < args.capacity_mah * 0.6:
+    nominal_capacity = battery_capacity
+    capacity_colour = palette.green if capacity_mah >= nominal_capacity * 0.95 else palette.yellow
+    if capacity_mah < nominal_capacity * 0.6:
         capacity_colour = palette.red
     print(
         f"{fmt_label('Capacity est.')}: "
         f"{palette.wrap(f'{capacity_mah:>8.0f} mAh', capacity_colour)} "
-        f"(nominal {args.capacity_mah:.0f} mAh)"
+        f"(nominal {nominal_capacity:.0f} mAh)"
     )
 
     if time_to_empty_hours is not None:

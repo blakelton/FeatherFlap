@@ -54,8 +54,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--capacity-mah",
         type=float,
-        default=10000.0,
-        help="Battery capacity in milliamp-hours (nominal, default 10000).",
+        default=None,
+        help="Battery capacity in milliamp-hours (defaults to FEATHERFLAP_BATTERY_CAPACITY_MAH).",
     )
     parser.add_argument(
         "--duration",
@@ -82,11 +82,14 @@ def main() -> int:
         addresses = list(DEFAULT_UPTIME_I2C_ADDRESSES)
 
     shunt = args.shunt_ohms if args.shunt_ohms is not None else settings.uptime_shunt_resistance_ohms
+    battery_capacity = (
+        args.capacity_mah if args.capacity_mah is not None else getattr(settings, "battery_capacity_mah", 10000.0)
+    )
     estimator = BatteryEstimator()
 
     print(
         f"Polling UPS on bus {bus_id} addresses {', '.join(hex(a) for a in addresses)} "
-        f"every {args.interval:.0f}s. Press Ctrl+C to stop."
+        f"every {args.interval:.0f}s (capacity {battery_capacity:.0f} mAh). Press Ctrl+C to stop."
     )
     if args.duration:
         print(f"Will stop after approximately {args.duration} minutes.")
@@ -110,7 +113,7 @@ def main() -> int:
                 voltage_v=readings.bus_voltage_v,
                 current_ma=readings.current_ma,
                 flow=readings.flow,
-                nominal_capacity_mah=args.capacity_mah,
+                nominal_capacity_mah=battery_capacity,
             )
 
             power_w = None

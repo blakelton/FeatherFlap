@@ -27,6 +27,7 @@ DEFAULT_AHT20_I2C_ADDRESS = 0x38
 DEFAULT_BMP280_I2C_ADDRESS = 0x76
 DEFAULT_I2C_BUS_ID = 1
 DEFAULT_UPTIME_SHUNT_RESISTANCE_OHMS = 0.01
+DEFAULT_BATTERY_CAPACITY_MAH = 10000
 DEFAULT_RECORDINGS_PATH = "recordings"
 DEFAULT_RECORDING_MAX_SECONDS = 30
 DEFAULT_RECORDING_MIN_GAP_SECONDS = 45
@@ -100,6 +101,11 @@ class AppSettings(BaseSettings):
         default=DEFAULT_UPTIME_SHUNT_RESISTANCE_OHMS,
         gt=0.0,
         description="Shunt resistor value (ohms) used by the UPS INA219 current sensor.",
+    )
+    battery_capacity_mah: float = Field(
+        default=DEFAULT_BATTERY_CAPACITY_MAH,
+        gt=0.0,
+        description="Nominal battery capacity (mAh) used for runtime estimates.",
     )
     aht20_i2c_address: int = Field(
         default=DEFAULT_AHT20_I2C_ADDRESS,
