@@ -39,21 +39,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--delay",
         type=float,
-        default=0.01,
-        help="Delay in seconds between readiness checks (default: 0.01).",
+        default=0.02,
+        help="Delay in seconds between readiness checks (default: 0.02).",
+    )
+    parser.add_argument(
+        "--no-reset",
+        action="store_true",
+        help="Skip the soft-reset step (useful if the sensor is mid-measurement).",
     )
     return parser.parse_args()
 
 
-def read_aht20(bus, address: int, retries: int, delay: float) -> tuple[float, float]:
-    bus.write_byte(address, 0xBA)  # soft reset
-    time.sleep(0.02)
-    bus.write_i2c_block_data(address, 0xBE, [0x08, 0x00])
+def probe_aht20(bus, address: int) -> int:
+    """Return the status register or raise if the sensor does not respond."""
+
+    try:
+        status = bus.read_byte(address)
+    except OSError as exc:
+        raise RuntimeError(f"No ACK from device at 0x{address:02X} on the selected bus.") from exc
+    return status
+
+
+def read_aht20(bus, address: int, retries: int, delay: float, perform_reset: bool) -> tuple[float, float]:
+    if perform_reset:
+        bus.write_byte(address, 0xBA)  # soft reset
+        time.sleep(0.02)
+    bus.write_i2c_block_data(address, 0xBE, [0x08, 0x00])  # init
     time.sleep(0.01)
     bus.write_i2c_block_data(address, 0xAC, [0x33, 0x00])
     time.sleep(0.08)
 
-    for _ in range(max(retries, 1)):
+    for attempt in range(max(retries, 1)):
         data = bus.read_i2c_block_data(address, 0x00, 6)
         if data[0] & 0x80:  # busy bit
             time.sleep(delay)
@@ -63,6 +79,8 @@ def read_aht20(bus, address: int, retries: int, delay: float) -> tuple[float, fl
         humidity = raw_h / 1048576.0 * 100.0
         temperature = raw_t / 1048576.0 * 200.0 - 50.0
         return temperature, humidity
+        if attempt == 0:
+            time.sleep(0.05)  # allow extra time after first read
     raise RuntimeError("AHT20 sensor busy after maximum retries.")
 
 
@@ -78,7 +96,14 @@ def main() -> int:
 
     try:
         with open_bus(bus_id) as bus:
-            temperature, humidity = read_aht20(bus, address, args.retry, args.delay)
+            status = probe_aht20(bus, address)
+            busy = bool(status & 0x80)
+            calibrated = bool(status & 0x08)
+            if busy:
+                print(f"Sensor status: 0x{status:02X} (busy bit set). Waiting for measurement...", file=sys.stderr)
+            if not calibrated:
+                print(f"Sensor status: 0x{status:02X} (calibration bit clear). Initialising...", file=sys.stderr)
+            temperature, humidity = read_aht20(bus, address, args.retry, args.delay, not args.no_reset)
     except FileNotFoundError as exc:
         print(f"ERROR: I2C bus {bus_id} not found: {exc}", file=sys.stderr)
         return 2
@@ -86,7 +111,12 @@ def main() -> int:
         print("ERROR: smbus/smbus2 library is not installed.", file=sys.stderr)
         return 2
     except Exception as exc:
-        print(f"ERROR: AHT20 read failed: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: AHT20 read failed: {exc}\n"
+            "Troubleshooting tips: verify wiring (3V3/SDA/SCL/GND), ensure the device appears in 'i2cdetect', "
+            "and try increasing --retry/--delay or using --no-reset if measurements are back-to-back.",
+            file=sys.stderr,
+        )
         return 1
 
     print(f"AHT20 @ 0x{address:02X} on bus {bus_id}")
