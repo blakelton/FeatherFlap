@@ -227,6 +227,7 @@ The repo now ships standalone scripts that exercise each peripheral without brin
 python scripts/test_i2c_bus.py                # Verify the I2C device node is reachable
 python scripts/test_ups.py --addresses 0x40 --shunt-ohms 0.01   # Check Seengreat UPS telemetry (override if addresses/ohms differ)
 python scripts/test_environmental.py          # Read AHT20 + BMP280 values once
+python scripts/test_aht20.py --address 0x38   # Talk to the AHT20 sensor in isolation
 python scripts/test_picamera.py               # Spin up the CSI camera via Picamera2
 python scripts/test_usb_camera.py --output frame.jpg  # Capture a JPEG from the USB camera
 python scripts/test_pir.py --samples 5        # Poll PIR sensor pins multiple times

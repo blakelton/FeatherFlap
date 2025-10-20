@@ -15,6 +15,7 @@ The `scripts/` folder hosts command-line helpers for validating each peripheral 
 | `test_i2c_bus.py` | Confirm the I²C bus is available and responsive. | `--bus-id` to choose an alternate bus. |
 | `test_ups.py` | Poll the Seengreat Pi Zero UPS HAT (B) telemetry via INA219/fuel-gauge addresses. | `--addresses 0x40 0x0b`, `--shunt-ohms` to override defaults. |
 | `test_environmental.py` | Capture a single reading from the AHT20 + BMP280 combo sensor. | `--bus-id`, `--aht20-address`, `--bmp280-address`. |
+| `test_aht20.py` | Read temperature/humidity directly from the AHT20 sensor. | `--bus-id`, `--address`. |
 | `test_pir.py` | Sample PIR motion sensor GPIO levels. | `--pins`, `--samples`, `--interval`. |
 | `test_rgb_led.py` | Cycle the RGB LED channels to validate wiring. | `--rounds`, `--delay`. |
 | `test_picamera.py` | Spin up Picamera2 and display capture stats. | `--preview`, `--resolution`. |
@@ -51,6 +52,12 @@ Tries each address in order until the UPS responds, printing VIN/VOUT/VBAT and t
 python scripts/test_environmental.py --bus-id 1 --aht20-address 0x38 --bmp280-address 0x76
 ```
 Reads the AHT20/BMP280 combo once and reports sensor values plus any per-device errors.
+
+### `test_aht20.py`
+```bash
+python scripts/test_aht20.py --bus-id 1 --address 0x38
+```
+Talks to the AHT20 alone, useful when the BMP280 is disconnected or under repair.
 
 ### `test_pir.py`
 ```bash
