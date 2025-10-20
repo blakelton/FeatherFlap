@@ -130,6 +130,12 @@ For local development without hardware:
 pip install -e .
 ```
 
+If you previously installed FeatherFlap and see `TypeError: Secondary flag is not valid for non-boolean flag` when running the CLI, refresh the Typer/Click pair before reinstalling:
+
+```bash
+pip install --upgrade 'typer>=0.12.3,<0.13' 'click>=8.1.7,<9'
+```
+
 On the Raspberry Pi with peripherals connected, install the optional hardware extras:
 
 ```bash
