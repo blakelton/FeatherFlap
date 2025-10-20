@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 from _paths import add_project_src_to_path
@@ -14,6 +15,35 @@ from featherflap.config import DEFAULT_UPTIME_I2C_ADDRESSES, get_settings
 from featherflap.hardware.i2c import SMBusNotAvailable
 from featherflap.hardware.power import UPSReadings, read_ups
 from _args import parse_int_sequence
+
+BATTERY_SOC_CURVE = [
+    (4.20, 100.0),
+    (4.15, 98.0),
+    (4.12, 95.0),
+    (4.10, 93.0),
+    (4.05, 90.0),
+    (4.00, 80.0),
+    (3.95, 72.0),
+    (3.92, 65.0),
+    (3.90, 60.0),
+    (3.87, 55.0),
+    (3.84, 50.0),
+    (3.80, 45.0),
+    (3.78, 40.0),
+    (3.75, 35.0),
+    (3.72, 30.0),
+    (3.70, 27.0),
+    (3.68, 24.0),
+    (3.65, 20.0),
+    (3.60, 15.0),
+    (3.55, 10.0),
+    (3.50, 6.0),
+    (3.45, 3.0),
+    (3.40, 1.0),
+    (3.35, 0.0),
+]
+
+MIN_CURRENT_FOR_RUNTIME_A = 0.05  # 50 mA threshold for timing estimates
 
 
 def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
@@ -41,6 +71,12 @@ def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
         type=float,
         default=None,
         help="Value (in ohms) of the INA219 shunt resistor. Defaults to FEATHERFLAP_UPTIME_SHUNT_RESISTANCE_OHMS.",
+    )
+    parser.add_argument(
+        "--capacity-mah",
+        type=float,
+        default=10000.0,
+        help="Battery capacity in milliamp-hours (default: 10000 for the Seengreat 10Ah pack).",
     )
     parser.add_argument(
         "--no-color",
@@ -80,6 +116,69 @@ def _supports_color(args: argparse.Namespace) -> bool:
     return sys.stdout.isatty()
 
 
+def estimate_state_of_charge(voltage: float) -> float:
+    curve = BATTERY_SOC_CURVE
+    if voltage >= curve[0][0]:
+        return 100.0
+    if voltage <= curve[-1][0]:
+        return 0.0
+    for (v_hi, soc_hi), (v_lo, soc_lo) in zip(curve, curve[1:]):
+        if v_lo <= voltage <= v_hi:
+            span = v_hi - v_lo
+            if span <= 0:
+                return soc_lo
+            fraction = (voltage - v_lo) / span
+            return soc_lo + fraction * (soc_hi - soc_lo)
+    return max(0.0, min(100.0, curve[-1][1]))
+
+
+def format_duration(hours: float) -> str:
+    if not math.isfinite(hours) or hours <= 0:
+        return "n/a"
+    total_minutes = int(round(hours * 60))
+    if total_minutes <= 0:
+        return "~0m"
+    hours_part, minutes = divmod(total_minutes, 60)
+    days, hours_only = divmod(hours_part, 24)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours_only:
+        parts.append(f"{hours_only}h")
+    if minutes and (not days or len(parts) < 2):
+        parts.append(f"{minutes}m")
+    if not parts:
+        return "~0m"
+    return " ".join(parts[:2])
+
+
+def compute_runtime_estimates(
+    readings: UPSReadings,
+    soc_pct: float,
+    capacity_mah: float,
+) -> tuple[float | None, float | None]:
+    if readings.current_ma is None or capacity_mah <= 0:
+        return None, None
+    capacity_ah = capacity_mah / 1000.0
+    net_current_a = readings.current_ma / 1000.0
+    energy_available_ah = capacity_ah * (soc_pct / 100.0)
+    energy_missing_ah = capacity_ah * max(0.0, 1.0 - soc_pct / 100.0)
+
+    time_to_empty = None
+    time_to_full = None
+
+    if readings.flow == "discharging":
+        discharge_current_a = abs(net_current_a)
+        if discharge_current_a >= MIN_CURRENT_FOR_RUNTIME_A and energy_available_ah > 0:
+            time_to_empty = energy_available_ah / discharge_current_a
+    elif readings.flow == "charging":
+        charge_current_a = max(net_current_a, 0.0)
+        if charge_current_a >= MIN_CURRENT_FOR_RUNTIME_A and energy_missing_ah > 0:
+            time_to_full = energy_missing_ah / charge_current_a
+
+    return time_to_empty, time_to_full
+
+
 def main() -> int:
     parser, args = parse_args()
     settings = get_settings()
@@ -110,24 +209,12 @@ def main() -> int:
 
     palette = Palette(_supports_color(args))
 
-    print()
-    heading = f"UPS telemetry @ address {hex(readings.address)}"
-    print(palette.wrap(heading, palette.bold, palette.blue))
-    separator = palette.wrap("-" * 36, palette.dim)
-    print(separator)
-    print(f"{palette.wrap('I2C bus', palette.bold):<18}: {palette.wrap(str(bus_id), palette.cyan)}")
-    print(
-        f"{palette.wrap('Bus voltage', palette.bold):<18}: "
-        f"{palette.wrap(f'{readings.bus_voltage_v:>8.3f} V', palette.magenta)}"
-    )
+    soc_pct = estimate_state_of_charge(readings.bus_voltage_v)
+    time_to_empty_hours, time_to_full_hours = compute_runtime_estimates(readings, soc_pct, args.capacity_mah)
 
-    if readings.shunt_voltage_mv is not None:
-        print(
-            f"{palette.wrap('Shunt voltage', palette.bold):<18}: "
-            f"{palette.wrap(f'{readings.shunt_voltage_mv:+8.3f} mV', palette.cyan)}"
-        )
-    else:
-        print(f"{palette.wrap('Shunt voltage', palette.bold):<18}: {palette.wrap('n/a', palette.dim)}")
+    def fmt_label(text: str) -> str:
+        raw = f"{text:<18}"
+        return palette.wrap(raw, palette.bold)
 
     flow_labels = {
         "discharging": "Supplying load",
@@ -142,39 +229,65 @@ def main() -> int:
         "unknown": palette.dim,
     }
 
+    soc_colour = palette.green if soc_pct >= 80 else palette.yellow if soc_pct >= 40 else palette.red
+
+    print()
+    heading = f"UPS telemetry @ address {hex(readings.address)}"
+    print(palette.wrap(heading, palette.bold, palette.blue))
+    separator = palette.wrap("-" * 40, palette.dim)
+    print(separator)
+    print(f"{fmt_label('I2C bus')}: {palette.wrap(str(bus_id), palette.cyan)}")
+    print(f"{fmt_label('Bus voltage')}: {palette.wrap(f'{readings.bus_voltage_v:>8.3f} V', palette.magenta)}")
+
+    if readings.shunt_voltage_mv is not None:
+        print(f"{fmt_label('Shunt voltage')}: {palette.wrap(f'{readings.shunt_voltage_mv:+8.3f} mV', palette.cyan)}")
+    else:
+        print(f"{fmt_label('Shunt voltage')}: {palette.wrap('n/a', palette.dim)}")
+
     if readings.current_ma is not None:
-        flow = flow_labels.get(readings.flow, "Current unavailable")
-        current_value = abs(readings.current_ma)
+        flow_text = flow_labels.get(readings.flow, "Current unavailable")
         flow_colour = flow_colours.get(readings.flow, palette.dim)
+        current_value = abs(readings.current_ma)
         current_str = f"{current_value:>8.2f} mA"
         print(
-            f"{palette.wrap('Current', palette.bold):<18}: "
+            f"{fmt_label('Current')}: "
             f"{palette.wrap(current_str, palette.green)} "
-            f"({palette.wrap(flow, flow_colour)})"
+            f"({palette.wrap(flow_text, flow_colour)})"
         )
     else:
-        print(
-            f"{palette.wrap('Current', palette.bold):<18}: "
-            f"{palette.wrap('n/a', palette.dim)} {palette.wrap('(set shunt value)', palette.dim)}"
-        )
+        print(f"{fmt_label('Current')}: {palette.wrap('n/a', palette.dim)} {palette.wrap('(set shunt value)', palette.dim)}")
 
     if readings.power_mw is not None and readings.current_ma is not None:
-        direction = "to load" if readings.flow == "discharging" else "into battery" if readings.flow == "charging" else "minimal flow"
-        power_w = abs(readings.power_mw) / 1000.0
+        direction = (
+            "to load"
+            if readings.flow == "discharging"
+            else "into battery"
+            if readings.flow == "charging"
+            else "minimal flow"
+        )
         direction_colour = flow_colours.get(readings.flow, palette.dim)
+        power_w = abs(readings.power_mw) / 1000.0
         print(
-            f"{palette.wrap('Power', palette.bold):<18}: "
+            f"{fmt_label('Power')}: "
             f"{palette.wrap(f'{power_w:>8.3f} W', palette.magenta)} "
             f"({palette.wrap(direction, direction_colour)})"
         )
     elif readings.power_mw is not None:
         power_w = readings.power_mw / 1000.0
-        print(
-            f"{palette.wrap('Power', palette.bold):<18}: "
-            f"{palette.wrap(f'{power_w:>8.3f} W', palette.magenta)}"
-        )
+        print(f"{fmt_label('Power')}: {palette.wrap(f'{power_w:>8.3f} W', palette.magenta)}")
     else:
-        print(f"{palette.wrap('Power', palette.bold):<18}: {palette.wrap('n/a', palette.dim)}")
+        print(f"{fmt_label('Power')}: {palette.wrap('n/a', palette.dim)}")
+
+    print(f"{fmt_label('Battery SoC')}: {palette.wrap(f'{soc_pct:>8.1f} %', soc_colour)}")
+
+    if time_to_empty_hours is not None:
+        eta = format_duration(time_to_empty_hours)
+        print(f"{fmt_label('Est. time remaining')}: {palette.wrap(eta, palette.green)}")
+    if time_to_full_hours is not None:
+        eta = format_duration(time_to_full_hours)
+        print(f"{fmt_label('Est. time to full')}: {palette.wrap(eta, palette.yellow)}")
+    if time_to_empty_hours is None and time_to_full_hours is None:
+        print(f"{fmt_label('Runtime estimate')}: {palette.wrap('n/a (insufficient current)', palette.dim)}")
 
     print(separator)
     print()
