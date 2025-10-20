@@ -19,6 +19,7 @@ The `scripts/` folder hosts command-line helpers for validating each peripheral 
 | `test_rgb_led.py` | Cycle the RGB LED channels to validate wiring. | `--rounds`, `--delay`. |
 | `test_picamera.py` | Spin up Picamera2 and display capture stats. | `--preview`, `--resolution`. |
 | `test_usb_camera.py` | Grab a JPEG frame from a USB camera via OpenCV. | `--device`, `--output`. |
+| `manage_usb_cameras.py` | Enable or disable USB (UVC) webcams (temporary until re-enabled). | `--enable`, `--disable`. |
 
 Run any script with `--help` to see full usage options. Example:
 
@@ -73,3 +74,13 @@ Initialises Picamera2, runs a preview for the requested duration, then shuts the
 python scripts/test_usb_camera.py --device 0 --width 1280 --height 720 --output frame.jpg
 ```
 Captures a JPEG frame using OpenCV, prints the byte size, and optionally writes it to disk.
+
+### `manage_usb_cameras.py`
+```bash
+# Disable all USB UVC webcams until re-enabled (root required)
+sudo python scripts/manage_usb_cameras.py --disable
+
+# Re-enable USB webcams
+sudo python scripts/manage_usb_cameras.py --enable
+```
+The script can also report current status. Use `--help` for full details.
