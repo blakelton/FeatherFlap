@@ -8,7 +8,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 import featherflap.server.routes as routes
-from featherflap.hardware import PIRUnavailable, RGBLedUnavailable
+from featherflap.hardware import PIRUnavailable, RGBLedUnavailable, PicameraUnavailable
 from featherflap.server.app import create_application
 
 
@@ -84,6 +84,23 @@ def test_rgb_led_color_unavailable(client: TestClient, monkeypatch: pytest.Monke
     response = client.post("/api/tests/rgb-led/color", json={"red": 0, "green": 0, "blue": 0})
     assert response.status_code == 503
     assert response.json()["detail"] == "LED hardware not ready"
+
+
+def test_camera_frame_csi_success(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(routes, "capture_picamera_jpeg", lambda *args, **kwargs: b"frame")
+    response = client.get("/api/camera/frame?source=csi")
+    assert response.status_code == 200
+    assert response.content == b"frame"
+
+
+def test_camera_frame_csi_unavailable(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_unavailable(*_args, **_kwargs):
+        raise PicameraUnavailable("CSI camera missing")
+
+    monkeypatch.setattr(routes, "capture_picamera_jpeg", raise_unavailable)
+    response = client.get("/api/camera/frame?source=csi")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "CSI camera missing"
 
 
 def test_read_configuration_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

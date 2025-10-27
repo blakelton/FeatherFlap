@@ -5,6 +5,7 @@ from .base import HardwareStatus, HardwareTest, HardwareTestResult
 from .camera import CameraUnavailable, capture_jpeg_frame, mjpeg_stream
 from .battery import BatteryEstimate, BatteryEstimator, voltage_to_soc
 from .pir import PIRUnavailable, read_pir_states
+from .picamera import PicameraUnavailable, capture_picamera_jpeg, picamera_mjpeg_stream
 from .power import UPSReadings, read_ups
 from .rgb_led import RGBLedUnavailable, flash_rgb_led_sequence, set_rgb_led_color
 from .registry import HardwareTestRegistry
@@ -34,4 +35,7 @@ __all__ = [
     "CameraUnavailable",
     "capture_jpeg_frame",
     "mjpeg_stream",
+    "PicameraUnavailable",
+    "capture_picamera_jpeg",
+    "picamera_mjpeg_stream",
 ]

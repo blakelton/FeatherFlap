@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from starlette.concurrency import iterate_in_threadpool
 
 from pydantic import BaseModel, Field
+from enum import Enum
 
 from ..config import (
     DEFAULT_CAMERA_DEVICE_INDEX,
@@ -33,6 +34,9 @@ from ..hardware import (
     RGBLedUnavailable,
     capture_jpeg_frame,
     mjpeg_stream,
+    PicameraUnavailable,
+    capture_picamera_jpeg,
+    picamera_mjpeg_stream,
     read_environment,
     read_pir_states,
     read_ups,
@@ -62,6 +66,11 @@ class RGBLedColorRequest(BaseModel):
     @property
     def hex_code(self) -> str:
         return f"{self.red:02X}{self.green:02X}{self.blue:02X}"
+
+
+class CameraSource(str, Enum):
+    USB = "usb"
+    CSI = "csi"
 
 
 class TemperatureSettingsPayload(BaseModel):
@@ -463,9 +472,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <p class="muted">Select a camera to start streaming. Only one feed runs at a time.</p>
         </div>
         <div class="camera-controls">
-          <label><input type="radio" name="camera-select" value="off" checked /> Off</label>
-          <label><input type="radio" name="camera-select" value="0" /> House 1</label>
-          <label><input type="radio" name="camera-select" value="1" /> House 2</label>
+          <label><input type="radio" name="camera-select" value="off" data-source="off" checked /> Off</label>
+          <label><input type="radio" name="camera-select" value="csi" data-source="csi" /> House 1 (CSI)</label>
+          <label><input type="radio" name="camera-select" value="usb:0" data-source="usb" data-device="0" /> House 2 (USB)</label>
         </div>
         <div class="camera-viewer">
           <img id="camera-stream" alt="FeatherFlap camera stream" hidden />
@@ -796,14 +805,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       var houseRows = [
         {
           order: 0,
-          cameraIndex: 0,
+          cameraSource: "csi",
+          cameraDevice: null,
           cameraCell: document.querySelector('[data-house-row="1"] .camera-state'),
           pirState: document.querySelector('[data-house-row="1"] .pir-state'),
           pirPinLabel: document.querySelector('[data-house-row="1"] .pir-pin')
         },
         {
           order: 1,
-          cameraIndex: 1,
+          cameraSource: "usb",
+          cameraDevice: 0,
           cameraCell: document.querySelector('[data-house-row="2"] .camera-state'),
           pirState: document.querySelector('[data-house-row="2"] .pir-state'),
           pirPinLabel: document.querySelector('[data-house-row="2"] .pir-pin')
@@ -847,7 +858,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       var settingsForm = document.getElementById("settings-form");
       var settingsFeedback = document.getElementById("settings-feedback");
 
-      var activeCamera = null;
+      var activeCameraSelection = null;
+      var activeCameraValue = "off";
       var latestPirStates = {};
       var pirPinOrder = [];
       var pollTimers = [];
@@ -896,12 +908,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         return value;
       }
 
+      function selectionMatchesHouse(selection, house) {
+        if (!selection || !house) {
+          return false;
+        }
+        if (selection.mode === "csi") {
+          return house.cameraSource === "csi";
+        }
+        if (selection.mode === "usb") {
+          return house.cameraSource === "usb" && house.cameraDevice === selection.device;
+        }
+        return false;
+      }
+
       function updateHouseRows() {
         houseRows.forEach(function (house, index) {
           if (!house || !house.cameraCell) {
             return;
           }
-          if (activeCamera === house.cameraIndex) {
+          if (selectionMatchesHouse(activeCameraSelection, house)) {
             setBadge(house.cameraCell, "Active", "status-active");
           } else {
             setBadge(house.cameraCell, "Standby", "status-idle");
@@ -929,27 +954,42 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
 
       function selectCameraRadio(value) {
+        activeCameraValue = value;
         cameraRadios.forEach(function (radio) {
           radio.checked = radio.value === value;
         });
       }
 
-      function startCameraStream(device) {
-        if (!cameraImg || typeof device !== "number") {
+      function startCameraStream(selection) {
+        if (!cameraImg || !selection || selection.mode === "off") {
           return;
         }
-        activeCamera = device;
+        activeCameraSelection = selection;
+        activeCameraValue = selection.rawValue || activeCameraValue;
+        var params = new URLSearchParams();
+        var label = "";
+        if (selection.mode === "csi") {
+          params.set("source", "csi");
+          label = "Picamera feed";
+        } else if (selection.mode === "usb" && typeof selection.device === "number") {
+          params.set("source", "usb");
+          params.set("device", String(selection.device));
+          label = "USB camera " + (selection.device + 1);
+        } else {
+          return;
+        }
         if (cameraPlaceholder) {
           cameraPlaceholder.hidden = true;
         }
         cameraImg.hidden = false;
-        cameraImg.src = "/api/camera/stream?device=" + device + "&_=" + Date.now();
-        updateCameraStatus("Starting camera " + (device + 1) + "...", false);
+        cameraImg.src = "/api/camera/stream?" + params.toString() + "&_=" + Date.now();
+        updateCameraStatus("Starting " + label + "...", false);
         updateHouseRows();
       }
 
       function stopCameraStream(message, isError) {
-        activeCamera = null;
+        activeCameraSelection = null;
+        activeCameraValue = "off";
         if (cameraImg) {
           cameraImg.removeAttribute("src");
           cameraImg.hidden = true;
@@ -961,24 +1001,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         updateHouseRows();
       }
 
-      function handleCameraSelection(value) {
-        if (value === "off") {
-          stopCameraStream("Camera feed is off.", false);
-          return;
+      function parseCameraSelection(input) {
+        if (!input) {
+          return { mode: "off", rawValue: "off" };
         }
-        var device = parseInt(value, 10);
-        if (isNaN(device)) {
+        var source = input.dataset.source || "usb";
+        var rawValue = input.value || "off";
+        if (source === "off" || rawValue === "off") {
+          return { mode: "off", rawValue: "off" };
+        }
+        if (source === "csi") {
+          return { mode: "csi", rawValue: rawValue };
+        }
+        var deviceAttr = input.dataset.device;
+        var deviceValue = deviceAttr && deviceAttr.length ? parseInt(deviceAttr, 10) : parseInt(rawValue.split(":")[1], 10);
+        if (isNaN(deviceValue)) {
+          deviceValue = 0;
+        }
+        return { mode: "usb", device: deviceValue, rawValue: rawValue };
+      }
+
+      function handleCameraSelection(input) {
+        var selection = parseCameraSelection(input);
+        if (!selection || selection.mode === "off") {
           stopCameraStream("Camera feed is off.", false);
           selectCameraRadio("off");
           return;
         }
-        startCameraStream(device);
+        selectCameraRadio(selection.rawValue || "off");
+        startCameraStream(selection);
       }
 
       if (cameraImg) {
         cameraImg.addEventListener("load", function () {
-          if (activeCamera !== null) {
-            updateCameraStatus("Streaming camera " + (activeCamera + 1) + ".", false);
+          if (activeCameraSelection) {
+            var label = activeCameraSelection.mode === "csi"
+              ? "Picamera feed"
+              : "USB camera " + (Number(activeCameraSelection.device) + 1);
+            updateCameraStatus("Streaming " + label + ".", false);
           }
         });
         cameraImg.addEventListener("error", function () {
@@ -993,7 +1053,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             if (!this.checked) {
               return;
             }
-            handleCameraSelection(this.value);
+            handleCameraSelection(this);
           });
         });
       }
@@ -1946,13 +2006,30 @@ async def system_status() -> Dict[str, object]:
 @router.get("/api/camera/frame")
 async def camera_frame(
     request: Request,
-    device: int | None = Query(None, ge=0, description="Camera device index."),
+    device: int | None = Query(None, ge=0, description="Camera device index (USB only)."),
+    source: CameraSource = Query(CameraSource.USB, description="Camera source (usb or csi)."),
 ) -> Response:
-    """Capture a single JPEG frame from the USB camera."""
+    """Capture a single JPEG frame from the selected camera."""
 
     settings = get_settings()
+    if source is CameraSource.CSI:
+        logger.debug("Capturing single CSI camera frame")
+        try:
+            frame = await asyncio.to_thread(
+                capture_picamera_jpeg,
+                (settings.camera_record_width, settings.camera_record_height),
+            )
+        except PicameraUnavailable as exc:
+            logger.warning("Picamera2 unavailable for capture: %s", exc)
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Unexpected CSI capture failure: %s", exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.info("Captured %d bytes from CSI camera", len(frame))
+        return Response(content=frame, media_type="image/jpeg")
+
     selected_device = _resolve_camera_device(settings, device)
-    logger.debug("Capturing single camera frame from device %s", selected_device)
+    logger.debug("Capturing single USB camera frame from device %s", selected_device)
     guard = _camera_guard(request, "snapshot")
     try:
         with guard:
@@ -1967,21 +2044,45 @@ async def camera_frame(
 @router.get("/api/camera/stream")
 async def camera_stream(
     request: Request,
-    device: int | None = Query(None, ge=0, description="Camera device index."),
+    device: int | None = Query(None, ge=0, description="Camera device index (USB only)."),
+    source: CameraSource = Query(CameraSource.USB, description="Camera source (usb or csi)."),
 ) -> StreamingResponse:
-    """Stream MJPEG frames from the USB camera."""
+    """Stream MJPEG frames from the selected camera."""
 
     settings = get_settings()
+    if source is CameraSource.CSI:
+        logger.debug("Opening CSI camera stream")
+
+        def csi_generator():
+            yield from picamera_mjpeg_stream(
+                (settings.camera_record_width, settings.camera_record_height),
+                settings.camera_record_fps,
+            )
+
+        try:
+            stream = iterate_in_threadpool(csi_generator())
+        except PicameraUnavailable as exc:
+            logger.warning("Picamera2 unavailable for streaming: %s", exc)
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Unexpected CSI stream failure: %s", exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.info("CSI camera stream initialised")
+        return StreamingResponse(
+            stream,
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
+
     selected_device = _resolve_camera_device(settings, device)
-    logger.debug("Opening camera stream for device %s", selected_device)
+    logger.debug("Opening USB camera stream for device %s", selected_device)
     guard = _camera_guard(request, "stream")
 
-    def generator():
+    def usb_generator():
         with guard:
             yield from mjpeg_stream(selected_device)
 
     try:
-        stream = iterate_in_threadpool(generator())
+        stream = iterate_in_threadpool(usb_generator())
     except CameraUnavailable as exc:
         logger.warning("USB camera unavailable for streaming: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
