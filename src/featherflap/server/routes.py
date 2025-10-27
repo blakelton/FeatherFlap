@@ -931,7 +931,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </body>
 </html>
 """
-Retrieve the shared hardware registry from the application state."""
+
+
+def get_registry(request: Request) -> HardwareTestRegistry:
+    """Retrieve the shared hardware registry from the application state."""
 
     registry = getattr(request.app.state, "registry", None)
     if registry is None:
