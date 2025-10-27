@@ -58,8 +58,13 @@ Additional runtime inputs:
 ## CLI & Server Operations
 - Launch diagnostics locally: `featherflap serve --host 0.0.0.0 --port 8000`.
 - Direct Uvicorn invocation (factory mode): `uvicorn featherflap.server.app:create_application --factory`.
-- The HTML dashboard renders buttons to invoke each hardware test via fetch calls to the REST API.
-- JSON endpoints under `/api/tests` and `/api/status/*` are async wrappers calling the hardware suite in thread pools to keep the event loop non-blocking.
+- Dashboard layout:
+  - **Home** tab binds the CSI ribbon camera to House 1 (Picamera2/rpicam stack) and USB cameras to House 2 (OpenCV). Users can toggle sources without restarting; badges update when a stream is active.
+  - **Diagnostics** tab shows CPU load, temperature (in the configured unit), storage, and RAM usage plus accordion-based hardware tests (pass/fail/info at a glance, expand for JSON).
+  - **Configuration** tab persists temperature units, PIR pins, camera defaults, and recording limits via `/api/config`. Saving updates applies immediately thanks to the in-memory settings cache.
+- Camera endpoints accept a `source` query (`usb` default, `csi` for Picamera2). `/api/camera/frame` and `/api/camera/stream` route to OpenCV or Picamera helpers accordingly; all code paths degrade gracefully if the dependency is missing.
+- JSON endpoints under `/api/tests` and `/api/status/*` remain async wrappers calling the hardware suite in thread pools to keep the event loop non-blocking.
+- To run the diagnostics stack at boot, install a `featherflap.service` systemd unit that executes the CLI from `/home/pi/FeatherFlap/.venv/bin/featherflap serve ...`; point `EnvironmentFile` at `.env`, append logs to `featherflap.log`, and `sudo systemctl enable --now featherflap`.
 
 ## Hardware Diagnostics Suite
 `hardware.tests.default_tests()` returns the canonical sequence loaded into the registry:

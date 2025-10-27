@@ -2,13 +2,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from contextlib import contextmanager
 
 pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
 import featherflap.server.routes as routes
-from featherflap.hardware import PIRUnavailable, RGBLedUnavailable, PicameraUnavailable
+from featherflap.hardware import PIRUnavailable, RGBLedUnavailable, PicameraUnavailable, CameraUnavailable
 from featherflap.server.app import create_application
 
 
@@ -25,6 +26,12 @@ def immediate_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
         return func(*args, **kwargs)
 
     monkeypatch.setattr(routes.asyncio, "to_thread", immediate)
+    monkeypatch.setattr(routes, "iterate_in_threadpool", lambda generator: generator)
+
+
+@contextmanager
+def _noop_guard():
+    yield
 
 
 def test_create_application() -> None:
@@ -101,6 +108,52 @@ def test_camera_frame_csi_unavailable(client: TestClient, monkeypatch: pytest.Mo
     response = client.get("/api/camera/frame?source=csi")
     assert response.status_code == 503
     assert response.json()["detail"] == "CSI camera missing"
+
+
+def test_camera_frame_usb_success(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(routes, "_resolve_camera_device", lambda *_: 1)
+    monkeypatch.setattr(routes, "_camera_guard", lambda *args, **kwargs: _noop_guard())
+    monkeypatch.setattr(routes, "capture_jpeg_frame", lambda *_args, **_kwargs: b"usb")
+    response = client.get("/api/camera/frame?device=1")
+    assert response.status_code == 200
+    assert response.content == b"usb"
+
+
+def test_camera_frame_usb_unavailable(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(routes, "_resolve_camera_device", lambda *_: 0)
+    monkeypatch.setattr(routes, "_camera_guard", lambda *args, **kwargs: _noop_guard())
+
+    def raise_unavailable(*_args, **_kwargs):
+        raise CameraUnavailable("usb missing")
+
+    monkeypatch.setattr(routes, "capture_jpeg_frame", raise_unavailable)
+    response = client.get("/api/camera/frame?device=0")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "usb missing"
+
+
+def test_camera_stream_csi_unavailable(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_unavailable(*_args, **_kwargs):
+        raise PicameraUnavailable("stream offline")
+
+    monkeypatch.setattr(routes, "picamera_mjpeg_stream", raise_unavailable)
+    response = client.get("/api/camera/stream?source=csi")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "stream offline"
+
+
+def test_camera_stream_usb_success(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(routes, "_resolve_camera_device", lambda *_: 0)
+    monkeypatch.setattr(routes, "_camera_guard", lambda *args, **kwargs: _noop_guard())
+
+    def generator(device):
+        yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\nTEST\r\n"
+
+    monkeypatch.setattr(routes, "mjpeg_stream", generator)
+    response = client.get("/api/camera/stream?device=0")
+    assert response.status_code == 200
+    payload = b"".join(response.iter_content(chunk_size=None))
+    assert b"TEST" in payload
 
 
 def test_read_configuration_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

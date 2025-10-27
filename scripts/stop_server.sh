@@ -1,11 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stops the FeatherFlap diagnostics server using the PID recorded by start_server.sh.
+# Stops the FeatherFlap diagnostics server, whether it was launched via
+# scripts/start_server.sh or managed by systemd.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PID_FILE="$REPO_ROOT/.run/featherflap.pid"
+SERVICE_NAME="featherflap.service"
+SYSTEMCTL_BIN="$(command -v systemctl || true)"
+
+if [ -n "$SYSTEMCTL_BIN" ]; then
+    if "$SYSTEMCTL_BIN" is-active --quiet "$SERVICE_NAME"; then
+        echo "Stopping systemd unit $SERVICE_NAME..."
+        sudo "$SYSTEMCTL_BIN" stop "$SERVICE_NAME"
+        if "$SYSTEMCTL_BIN" is-active --quiet "$SERVICE_NAME"; then
+            echo "Failed to stop $SERVICE_NAME via systemd. Check service logs." >&2
+            exit 1
+        fi
+        echo "Systemd service stopped."
+        exit 0
+    fi
+fi
 
 if [ ! -f "$PID_FILE" ]; then
     echo "No PID file found at $PID_FILE. Is the server running?" >&2

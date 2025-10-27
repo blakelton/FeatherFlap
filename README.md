@@ -200,8 +200,55 @@ Useful API routes once the server is running:
 
 - `GET /api/status/environment` — current readings from the AHT20 + BMP280 combo board.
 - `GET /api/status/ups` — live telemetry from the Seengreat Pi Zero UPS HAT (B), exposing INA219-derived bus voltage, shunt drop, and computed current/power.
-- `GET /api/camera/frame` — capture a single JPEG frame from the configured USB camera.
-- `GET /api/camera/stream` — MJPEG stream suitable for browser previews when validating focus/FOV.
+- `GET /api/camera/frame` — capture a single JPEG frame from the configured camera. Pass `?source=csi` to use the ribbon (Picamera2) feed, default is USB/OpenCV.
+- `GET /api/camera/stream` — MJPEG stream suitable for browser previews when validating focus/FOV. The same `source` query selects CSI vs USB.
+
+#### Dashboard experience
+
+The `/` dashboard now exposes three dedicated tabs:
+
+- **Home** – live camera selection (CSI ribbon for House 1, USB for House 2), PIR state, environment snapshot, UPS telemetry, and a quick RGB LED test.
+- **Diagnostics** – system specifications (CPU load, temperature in your preferred unit, disk + memory usage) presented with micro charts, plus an accordion view of every hardware diagnostic. Expand any test to see structured details; the “Run full suite” button summarises pass/fail/ informational states.
+- **Configuration** – modify runtime settings without restarting the service. You can adjust temperature units, PIR pins, camera defaults, and recording limits directly from the browser. Saving updates immediately refreshes `AppSettings` in memory, so the rest of the app sees changes on the next request.
+
+Camera selection is source-aware: picking “House 1 (CSI)” streams via Picamera2, while “House 2 (USB)” pulls from the selected V4L2 index. If you see “Camera stream unavailable”, double-check that the appropriate dependency (`picamera2` or `opencv-python`) is installed and that no other process is using the device.
+
+#### Run the server at boot
+
+To keep FeatherFlap online after reboots, register a simple systemd unit:
+
+```bash
+sudo tee /etc/systemd/system/featherflap.service <<'EOF'
+[Unit]
+Description=FeatherFlap Diagnostics Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi         # replace with your user
+Group=pi
+WorkingDirectory=/home/pi/FeatherFlap
+EnvironmentFile=/home/pi/FeatherFlap/.env
+ExecStart=/home/pi/FeatherFlap/.venv/bin/featherflap serve --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/pi/FeatherFlap/featherflap.log
+StandardError=append:/home/pi/FeatherFlap/featherflap.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now featherflap.service
+```
+
+Adjust `User`, `Group`, and paths if your deployment differs. The log file accumulates under `featherflap.log`, so rotate it via `logrotate` if desired. To stop or restart manually:
+
+```bash
+sudo systemctl stop featherflap.service
+sudo systemctl restart featherflap.service
+```
 
 ### Command-line alternatives
 
