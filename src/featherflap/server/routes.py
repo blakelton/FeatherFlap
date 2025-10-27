@@ -472,9 +472,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <p class="muted">Select a camera to start streaming. Only one feed runs at a time.</p>
         </div>
         <div class="camera-controls">
-          <label><input type="radio" name="camera-select" value="off" data-source="off" checked /> Off</label>
-          <label><input type="radio" name="camera-select" value="csi" data-source="csi" /> House 1 (CSI)</label>
-          <label><input type="radio" name="camera-select" value="usb:0" data-source="usb" data-device="0" /> House 2 (USB)</label>
+          <label><input id="camera-radio-off" type="radio" name="camera-select" value="off" data-source="off" checked /> Off</label>
+          <label><input id="camera-radio-csi" type="radio" name="camera-select" value="csi" data-source="csi" /> House 1 (CSI)</label>
+          <label><input id="camera-radio-usb" type="radio" name="camera-select" value="usb:0" data-source="usb" data-device="0" /> <span id="camera-usb-label">House 2 (USB)</span></label>
         </div>
         <div class="camera-viewer">
           <img id="camera-stream" alt="FeatherFlap camera stream" hidden />
@@ -798,6 +798,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       var availableTemperatureUnits = [];
 
       var cameraRadios = document.querySelectorAll('input[name="camera-select"]');
+      var usbRadio = document.getElementById("camera-radio-usb");
+      var usbLabel = document.getElementById("camera-usb-label");
       var cameraImg = document.getElementById("camera-stream");
       var cameraPlaceholder = document.getElementById("camera-placeholder");
       var cameraStatus = document.getElementById("camera-status");
@@ -1129,6 +1131,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
         if (recordingGapField && snapshot.recording) {
           recordingGapField.value = snapshot.recording.min_gap_seconds;
+        }
+        if (houseRows[1]) {
+          var usbDeviceIndex = snapshot.camera && typeof snapshot.camera.device === "number" ? snapshot.camera.device : 0;
+          houseRows[1].cameraDevice = usbDeviceIndex;
+          if (usbRadio) {
+            usbRadio.dataset.device = String(usbDeviceIndex);
+            usbRadio.value = "usb:" + usbDeviceIndex;
+          }
+          if (usbLabel) {
+            usbLabel.textContent = "House 2 (USB " + (usbDeviceIndex + 1) + ")";
+          }
         }
         pirPinOrder = (snapshot.pir && snapshot.pir.pins) ? snapshot.pir.pins.slice(0, houseRows.length) : [];
         updateHouseRows();
