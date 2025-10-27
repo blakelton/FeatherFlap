@@ -51,7 +51,9 @@ from ..runtime import CameraBusyError
 
 router = APIRouter()
 logger = get_logger(__name__)
-BATTERY_ESTIMATOR = BatteryEstimator()
+BATTERY_DATA_DIR = Path(__file__).resolve().parents[2] / ".runtime" / "battery"
+BATTERY_DATA_DIR.mkdir(parents=True, exist_ok=True)
+BATTERY_ESTIMATOR = BatteryEstimator(data_dir=BATTERY_DATA_DIR)
 BATTERY_LOCK = threading.Lock()
 
 STATUS_PRIORITY = {

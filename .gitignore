@@ -206,4 +206,6 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 test-output.xml
+.runtime/
+.run/
 .featherflap-settings.json

@@ -285,9 +285,9 @@ def _load_runtime_overrides() -> Dict[str, Any]:
 def _write_runtime_overrides(overrides: Dict[str, Any]) -> None:
     try:
         RUNTIME_CONFIG_PATH.write_text(json.dumps(overrides, indent=2, sort_keys=True))
-        except Exception:
-            logger = logging.getLogger("featherflap.config")
-            logger.warning("Failed to persist runtime configuration overrides to %s", RUNTIME_CONFIG_PATH)
+    except Exception:
+        logger = logging.getLogger("featherflap.config")
+        logger.warning("Failed to persist runtime configuration overrides to %s", RUNTIME_CONFIG_PATH)
 
 
 def _load_settings() -> AppSettings:
