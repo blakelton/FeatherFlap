@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from enum import Enum
 from pathlib import Path
 from threading import RLock
@@ -249,14 +251,57 @@ class AppSettings(BaseSettings):
         return normalised
 
 
+_DEFAULT_RUNTIME_PATH = Path(__file__).resolve().parents[2] / ".featherflap-settings.json"
+RUNTIME_CONFIG_PATH = Path(os.getenv("FEATHERFLAP_RUNTIME_CONFIG", str(_DEFAULT_RUNTIME_PATH)))
+PERSISTED_FIELDS = {
+    "temperature_unit",
+    "pir_pins",
+    "motion_poll_interval_seconds",
+    "camera_device",
+    "camera_record_width",
+    "camera_record_height",
+    "camera_record_fps",
+    "recordings_path",
+    "recording_max_seconds",
+    "recording_min_gap_seconds",
+}
+
 _SETTINGS_LOCK = RLock()
 _SETTINGS: AppSettings | None = None
 
 
-def _load_settings() -> AppSettings:
-    """Instantiate settings from the environment."""
+def _load_runtime_overrides() -> Dict[str, Any]:
+    if not RUNTIME_CONFIG_PATH.exists():
+        return {}
+    try:
+        data = json.loads(RUNTIME_CONFIG_PATH.read_text())
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
 
-    return AppSettings()
+
+def _write_runtime_overrides(overrides: Dict[str, Any]) -> None:
+    try:
+        RUNTIME_CONFIG_PATH.write_text(json.dumps(overrides, indent=2, sort_keys=True))
+        except Exception:
+            logger = logging.getLogger("featherflap.config")
+            logger.warning("Failed to persist runtime configuration overrides to %s", RUNTIME_CONFIG_PATH)
+
+
+def _load_settings() -> AppSettings:
+    """Instantiate settings from the environment and runtime overrides."""
+
+    base = AppSettings()
+    overrides = _load_runtime_overrides()
+    if overrides:
+        try:
+            base = base.model_copy(update=overrides, deep=True)
+        except Exception:
+            logger = logging.getLogger("featherflap.config")
+            logger.warning("Ignoring invalid runtime overrides: %s", overrides)
+    return base
 
 
 def get_settings() -> AppSettings:
@@ -286,6 +331,17 @@ def update_settings(changes: Dict[str, Any]) -> AppSettings:
         current = get_settings()
         updated = current.model_copy(update=changes, deep=True)
         _SETTINGS = updated
+
+        overrides = _load_runtime_overrides()
+        for key in PERSISTED_FIELDS:
+            if key in changes:
+                value = getattr(updated, key)
+                if isinstance(value, Path):
+                    overrides[key] = str(value)
+                else:
+                    overrides[key] = value
+        _write_runtime_overrides(overrides)
+
         return _SETTINGS
 
 

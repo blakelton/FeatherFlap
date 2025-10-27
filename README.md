@@ -185,6 +185,8 @@ Logs are emitted through a central `featherflap` logger and written to standard 
 
 You can supply these values via exported environment variables, a `.env` file placed in the project root, or direct Pydantic overrides when instantiating `AppSettings` in custom tooling.
 
+Runtime changes submitted through the dashboard's **Configuration** tab are persisted to `.featherflap-settings.json` in the project root. These overrides take precedence over `.env` on subsequent requests and even survive service restarts, so you can set the correct USB camera index or temperature unit once from the UI.
+
 ### Logging
 
 FeatherFlap initialises a single namespaced logger (`featherflap`) that all components share:

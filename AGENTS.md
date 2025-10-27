@@ -65,6 +65,7 @@ Additional runtime inputs:
 - Camera endpoints accept a `source` query (`usb` default, `csi` for Picamera2). `/api/camera/frame` and `/api/camera/stream` route to OpenCV or Picamera helpers accordingly; all code paths degrade gracefully if the dependency is missing.
 - JSON endpoints under `/api/tests` and `/api/status/*` remain async wrappers calling the hardware suite in thread pools to keep the event loop non-blocking.
 - To run the diagnostics stack at boot, install a `featherflap.service` systemd unit that executes the CLI from `/home/pi/FeatherFlap/.venv/bin/featherflap serve ...`; point `EnvironmentFile` at `.env`, append logs to `featherflap.log`, and `sudo systemctl enable --now featherflap`.
+- Settings saved via the Configuration tab persist to `.featherflap-settings.json` in the repo root. This file overrides `.env` on restart, so do not commit it—agents should treat it as runtime state only.
 
 ## Hardware Diagnostics Suite
 `hardware.tests.default_tests()` returns the canonical sequence loaded into the registry:

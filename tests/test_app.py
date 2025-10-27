@@ -1,8 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import contextmanager
 
 import pytest
-from contextlib import contextmanager
 
 pytest.importorskip("fastapi")
 
@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import featherflap.server.routes as routes
 from featherflap.hardware import PIRUnavailable, RGBLedUnavailable, PicameraUnavailable, CameraUnavailable
 from featherflap.server.app import create_application
+import featherflap.config as config
 
 
 @pytest.fixture()
@@ -18,6 +19,15 @@ def client() -> TestClient:
     app = create_application()
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture(autouse=True)
+def runtime_config_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(config, "RUNTIME_CONFIG_PATH", path, raising=False)
+    config._SETTINGS = None
+    yield
+    config._SETTINGS = None
 
 
 @pytest.fixture(autouse=True)
