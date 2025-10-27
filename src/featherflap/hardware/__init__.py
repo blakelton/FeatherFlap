@@ -4,7 +4,9 @@ from ..logger import get_logger
 from .base import HardwareStatus, HardwareTest, HardwareTestResult
 from .camera import CameraUnavailable, capture_jpeg_frame, mjpeg_stream
 from .battery import BatteryEstimate, BatteryEstimator, voltage_to_soc
+from .pir import PIRUnavailable, read_pir_states
 from .power import UPSReadings, read_ups
+from .rgb_led import RGBLedUnavailable, flash_rgb_led_sequence, set_rgb_led_color
 from .registry import HardwareTestRegistry
 from .sensors import EnvironmentSnapshot, read_environment
 from .tests import default_tests
@@ -21,6 +23,11 @@ __all__ = [
     "read_environment",
     "UPSReadings",
     "read_ups",
+    "PIRUnavailable",
+    "read_pir_states",
+    "RGBLedUnavailable",
+    "flash_rgb_led_sequence",
+    "set_rgb_led_color",
     "BatteryEstimate",
     "BatteryEstimator",
     "voltage_to_soc",

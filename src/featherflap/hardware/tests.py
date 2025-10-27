@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import platform
 import socket
-import time
 from contextlib import suppress
 from typing import Dict, Iterable, List, Optional
 
@@ -14,7 +13,9 @@ from ..logger import get_logger
 from .base import HardwareStatus, HardwareTest, HardwareTestResult
 from .camera import CameraUnavailable, capture_jpeg_frame
 from .i2c import SMBusNotAvailable, has_smbus, open_bus
+from .pir import PIRUnavailable, read_pir_states
 from .power import read_ups
+from .rgb_led import RGBLedUnavailable, flash_rgb_led_sequence
 from .sensors import read_environment
 
 
@@ -332,23 +333,15 @@ class PIRSensorTest(HardwareTest):
 
     def run(self) -> HardwareTestResult:
         logger.debug("Running PIR sensor diagnostic")
-        try:
-            import RPi.GPIO as GPIO  # type: ignore
-        except ImportError:
-            logger.warning("RPi.GPIO not installed; skipping PIR diagnostic")
-            return _skipped_result(self, PIR_SKIP_MESSAGE)
-
         settings = get_settings()
         pins = settings.pir_pins
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        states: Dict[int, int] = {}
         try:
-            for pin in pins:
-                GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-                states[pin] = GPIO.input(pin)
-        except Exception as exc:
-            logger.error("PIR sensor diagnostic failed: %s", exc)
+            states = read_pir_states(pins)
+        except PIRUnavailable as exc:
+            logger.warning("PIR diagnostic skipped: %s", exc)
+            return _skipped_result(self, PIR_SKIP_MESSAGE)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Unexpected PIR diagnostic failure: %s", exc)
             return HardwareTestResult(
                 id=self.id,
                 name=self.name,
@@ -356,10 +349,6 @@ class PIRSensorTest(HardwareTest):
                 summary="Failed to read PIR sensors.",
                 details={"error": str(exc)},
             )
-        finally:
-            for pin in pins:
-                with suppress(Exception):
-                    GPIO.cleanup(pin)
         summary_bits = ", ".join(f"GPIO{pin}={'HIGH' if val else 'LOW'}" for pin, val in states.items())
         logger.info("PIR sensor diagnostic succeeded: %s", summary_bits)
         return HardwareTestResult(
@@ -379,25 +368,15 @@ class RGBLedTest(HardwareTest):
 
     def run(self) -> HardwareTestResult:
         logger.debug("Running RGB LED diagnostic")
-        try:
-            import RPi.GPIO as GPIO  # type: ignore
-        except ImportError:
-            logger.warning("RPi.GPIO not installed; skipping RGB LED diagnostic")
-            return _skipped_result(self, RGB_LED_SKIP_MESSAGE)
-
         settings = get_settings()
         pins = settings.rgb_led_pins
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
         try:
-            for pin in pins:
-                GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
-            for pin in pins:
-                GPIO.output(pin, GPIO.HIGH)
-                time.sleep(RGB_LED_TOGGLE_DELAY_SECONDS)
-                GPIO.output(pin, GPIO.LOW)
-        except Exception as exc:
-            logger.error("RGB LED diagnostic failed: %s", exc)
+            flash_rgb_led_sequence(pins, RGB_LED_TOGGLE_DELAY_SECONDS)
+        except RGBLedUnavailable as exc:
+            logger.warning("RGB LED diagnostic skipped: %s", exc)
+            return _skipped_result(self, RGB_LED_SKIP_MESSAGE)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Unexpected RGB LED diagnostic failure: %s", exc)
             return HardwareTestResult(
                 id=self.id,
                 name=self.name,
@@ -405,10 +384,6 @@ class RGBLedTest(HardwareTest):
                 summary="Failed to toggle RGB LED pins.",
                 details={"error": str(exc)},
             )
-        finally:
-            for pin in pins:
-                with suppress(Exception):
-                    GPIO.cleanup(pin)
         logger.info("RGB LED diagnostic toggled pins %s", pins)
         return HardwareTestResult(
             id=self.id,
