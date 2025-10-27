@@ -1,3 +1,6 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -81,3 +84,75 @@ def test_rgb_led_color_unavailable(client: TestClient, monkeypatch: pytest.Monke
     response = client.post("/api/tests/rgb-led/color", json={"red": 0, "green": 0, "blue": 0})
     assert response.status_code == 503
     assert response.json()["detail"] == "LED hardware not ready"
+
+
+def test_read_configuration_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = SimpleNamespace(
+        temperature_unit=routes.TemperatureUnit.CELSIUS,
+        pir_pins=[17, 27],
+        motion_poll_interval_seconds=0.5,
+        camera_device=1,
+        camera_record_width=800,
+        camera_record_height=600,
+        camera_record_fps=20.0,
+        recordings_path=Path("recordings"),
+        recording_max_seconds=45,
+        recording_min_gap_seconds=60,
+    )
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+    response = client.get("/api/config")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["temperature"]["unit"] == "celsius"
+    assert payload["pir"]["pins"] == [17, 27]
+    assert payload["camera"]["device"] == 1
+    assert payload["recording"]["max_seconds"] == 45
+
+
+def test_update_configuration_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def fake_update(settings_dict):
+        captured.update(settings_dict)
+        return SimpleNamespace(
+            temperature_unit=settings_dict["temperature_unit"],
+            pir_pins=settings_dict["pir_pins"],
+            motion_poll_interval_seconds=settings_dict["motion_poll_interval_seconds"],
+            camera_device=settings_dict["camera_device"],
+            camera_record_width=settings_dict["camera_record_width"],
+            camera_record_height=settings_dict["camera_record_height"],
+            camera_record_fps=settings_dict["camera_record_fps"],
+            recordings_path=Path(settings_dict["recordings_path"]),
+            recording_max_seconds=settings_dict["recording_max_seconds"],
+            recording_min_gap_seconds=settings_dict["recording_min_gap_seconds"],
+        )
+
+    monkeypatch.setattr(routes, "update_settings", fake_update)
+    payload = {
+        "temperature": {"unit": "fahrenheit"},
+        "pir": {"pins": [5, 6], "motion_poll_interval_seconds": 0.75},
+        "camera": {"device": 2, "record_width": 1024, "record_height": 768, "record_fps": 25},
+        "recording": {"path": "/tmp/rec", "max_seconds": 60, "min_gap_seconds": 10},
+    }
+    response = client.put("/api/config", json=payload)
+    assert response.status_code == 200
+    assert captured["temperature_unit"] == routes.TemperatureUnit.FAHRENHEIT
+    assert captured["pir_pins"] == [5, 6]
+    assert captured["recordings_path"] == "/tmp/rec"
+    assert response.json()["message"] == "Settings updated."
+
+
+def test_system_status_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = {
+        "timestamp": "2024-01-01T00:00:00+00:00",
+        "load": {"1m": 0.1, "5m": 0.2, "15m": 0.3},
+        "cpu_percent": 42.0,
+        "cpu_count": 4,
+        "memory": {"total_bytes": 1024.0, "available_bytes": 512.0, "used_bytes": 512.0, "percent_used": 50.0},
+        "storage": {"path": "/tmp", "total_bytes": 2048.0, "used_bytes": 1024.0, "free_bytes": 1024.0},
+        "temperature": {"celsius": 40.0, "preferred": {"unit": "celsius", "value": 40.0}},
+    }
+    monkeypatch.setattr(routes, "_collect_system_status", lambda _settings: expected)
+    response = client.get("/api/status/system")
+    assert response.status_code == 200
+    assert response.json() == expected

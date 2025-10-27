@@ -122,9 +122,9 @@ def mjpeg_stream(
                 logger.error("Camera stream halted: capture returned empty frame")
                 raise CameraUnavailable("Camera stream halted unexpectedly.")
             success, encoded = cv2.imencode(".jpg", frame, encode_params)
-        if not success:
-            logger.error("Camera stream encoding failed")
-            raise CameraUnavailable("Failed to encode camera frame as JPEG.")
+            if not success:
+                logger.error("Camera stream encoding failed")
+                raise CameraUnavailable("Failed to encode camera frame as JPEG.")
             payload = encoded.tobytes()
             logger.debug("Encoded MJPEG frame (%d bytes)", len(payload))
             yield (

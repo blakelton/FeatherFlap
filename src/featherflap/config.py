@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 from enum import Enum
-from functools import lru_cache
 from pathlib import Path
+from threading import RLock
 from typing import Any, Dict, List, Optional
 
 from pydantic import Field, field_validator
@@ -35,6 +35,14 @@ DEFAULT_MOTION_POLL_INTERVAL_SECONDS = 0.25
 DEFAULT_CAMERA_RECORD_WIDTH = 1280
 DEFAULT_CAMERA_RECORD_HEIGHT = 720
 DEFAULT_CAMERA_RECORD_FPS = 15.0
+
+
+class TemperatureUnit(str, Enum):
+    """Display unit for temperature values."""
+
+    CELSIUS = "celsius"
+    FAHRENHEIT = "fahrenheit"
+    KELVIN = "kelvin"
 
 
 class OperationMode(str, Enum):
@@ -158,6 +166,10 @@ class AppSettings(BaseSettings):
         gt=0.0,
         description="Frame rate used for run-mode recordings.",
     )
+    temperature_unit: TemperatureUnit = Field(
+        default=TemperatureUnit.CELSIUS,
+        description="Preferred display unit for temperature values in the UI.",
+    )
 
     @field_validator("pir_pins", mode="before")
     @classmethod
@@ -237,8 +249,55 @@ class AppSettings(BaseSettings):
         return normalised
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> AppSettings:
-    """Return cached application settings."""
+_SETTINGS_LOCK = RLock()
+_SETTINGS: AppSettings | None = None
+
+
+def _load_settings() -> AppSettings:
+    """Instantiate settings from the environment."""
 
     return AppSettings()
+
+
+def get_settings() -> AppSettings:
+    """Return the current application settings, loading them if necessary."""
+
+    global _SETTINGS
+    with _SETTINGS_LOCK:
+        if _SETTINGS is None:
+            _SETTINGS = _load_settings()
+        return _SETTINGS
+
+
+def reload_settings() -> AppSettings:
+    """Reload settings from the environment, replacing the current cache."""
+
+    global _SETTINGS
+    with _SETTINGS_LOCK:
+        _SETTINGS = _load_settings()
+        return _SETTINGS
+
+
+def update_settings(changes: Dict[str, Any]) -> AppSettings:
+    """Apply runtime overrides to the current settings."""
+
+    global _SETTINGS
+    with _SETTINGS_LOCK:
+        current = get_settings()
+        updated = current.model_copy(update=changes, deep=True)
+        _SETTINGS = updated
+        return _SETTINGS
+
+
+def convert_temperature(value_c: Optional[float], unit: TemperatureUnit) -> Optional[float]:
+    """Convert a Celsius reading into the configured unit."""
+
+    if value_c is None:
+        return None
+    if unit is TemperatureUnit.CELSIUS:
+        return value_c
+    if unit is TemperatureUnit.FAHRENHEIT:
+        return value_c * 9.0 / 5.0 + 32.0
+    if unit is TemperatureUnit.KELVIN:
+        return value_c + 273.15
+    return value_c

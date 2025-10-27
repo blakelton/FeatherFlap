@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import os
 from contextlib import nullcontext
-from typing import Dict, List
+from pathlib import Path
+import shutil
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
@@ -13,7 +16,14 @@ from starlette.concurrency import iterate_in_threadpool
 
 from pydantic import BaseModel, Field
 
-from ..config import DEFAULT_CAMERA_DEVICE_INDEX, DEFAULT_UPTIME_I2C_ADDRESSES, get_settings
+from ..config import (
+    DEFAULT_CAMERA_DEVICE_INDEX,
+    DEFAULT_UPTIME_I2C_ADDRESSES,
+    TemperatureUnit,
+    convert_temperature,
+    get_settings,
+    update_settings,
+)
 from ..hardware import (
     CameraUnavailable,
     HardwareStatus,
@@ -54,6 +64,35 @@ class RGBLedColorRequest(BaseModel):
         return f"{self.red:02X}{self.green:02X}{self.blue:02X}"
 
 
+class TemperatureSettingsPayload(BaseModel):
+    unit: TemperatureUnit = Field(default=TemperatureUnit.CELSIUS)
+
+
+class PIRSettingsPayload(BaseModel):
+    pins: list[int] = Field(default_factory=list)
+    motion_poll_interval_seconds: float = Field(0.25, gt=0.0)
+
+
+class CameraSettingsPayload(BaseModel):
+    device: Optional[int] = Field(default=DEFAULT_CAMERA_DEVICE_INDEX, ge=0)
+    record_width: int = Field(default=640, gt=0)
+    record_height: int = Field(default=480, gt=0)
+    record_fps: float = Field(default=15.0, gt=0.0)
+
+
+class RecordingSettingsPayload(BaseModel):
+    path: str = Field(default="recordings")
+    max_seconds: int = Field(default=30, gt=0)
+    min_gap_seconds: int = Field(default=45, ge=0)
+
+
+class ConfigurationUpdateRequest(BaseModel):
+    temperature: TemperatureSettingsPayload
+    pir: PIRSettingsPayload
+    camera: CameraSettingsPayload
+    recording: RecordingSettingsPayload
+
+
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -68,7 +107,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     body {
       margin: 0 auto;
       padding: 1.5rem;
-      max-width: 1100px;
+      max-width: 1200px;
       line-height: 1.5;
     }
     .page-header {
@@ -81,6 +120,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       display: flex;
       gap: 0.5rem;
       margin-bottom: 1rem;
+      flex-wrap: wrap;
     }
     .tab-button {
       appearance: none;
@@ -226,6 +266,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       margin-bottom: 0.75rem;
     }
     form input,
+    form select,
     form button {
       font: inherit;
     }
@@ -236,7 +277,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       padding: 0;
       cursor: pointer;
     }
-    form input[type="number"] {
+    form input[type="number"],
+    form input[type="text"],
+    form select {
       padding: 0.4rem 0.5rem;
       border-radius: 6px;
       border: 1px solid rgba(0,0,0,0.2);
@@ -275,6 +318,115 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       font-weight: 600;
       cursor: pointer;
     }
+    .system-grid {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      margin-bottom: 1rem;
+    }
+    .spec-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+    .progress {
+      width: 100%;
+      height: 0.4rem;
+      border-radius: 999px;
+      background: rgba(15,23,42,0.15);
+      overflow: hidden;
+      margin-top: 0.35rem;
+    }
+    .progress span {
+      display: block;
+      height: 100%;
+      background: #2563eb;
+      width: 0;
+    }
+    .charts-grid {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+    .chart-card canvas {
+      width: 100%;
+      max-width: 100%;
+      display: block;
+    }
+    .diag-accordion {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    details.diagnostic-item {
+      border: 1px solid rgba(0,0,0,0.1);
+      border-radius: 10px;
+      padding: 0.5rem 0.75rem;
+      background: rgba(255,255,255,0.03);
+    }
+    details.diagnostic-item summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: center;
+    }
+    details.diagnostic-item summary::-webkit-details-marker {
+      display: none;
+    }
+    .diag-pill {
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+      font-weight: 600;
+      font-size: 0.85rem;
+    }
+    .diag-pill-pass {
+      background: #1a7f37;
+      color: #fff;
+    }
+    .diag-pill-fail {
+      background: #b42318;
+      color: #fff;
+    }
+    .diag-pill-info {
+      background: #475467;
+      color: #fff;
+    }
+    .diag-body {
+      margin-top: 0.5rem;
+    }
+    .diag-body button {
+      padding: 0.5rem 0.9rem;
+      border-radius: 6px;
+      border: none;
+      background: #2563eb;
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .diag-summary {
+      margin: 0.5rem 0;
+    }
+    .config-grid {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+    .form-actions {
+      margin-top: 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: center;
+    }
+    .feedback-success {
+      color: #1a7f37;
+      font-weight: 600;
+    }
+    .feedback-error {
+      color: #b42318;
+      font-weight: 600;
+    }
     @media (max-width: 640px) {
       body {
         padding: 1rem;
@@ -286,17 +438,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       .testing-header button {
         margin-left: 0;
       }
+      details.diagnostic-item summary {
+        flex-direction: column;
+        align-items: flex-start;
+      }
     }
   </style>
 </head>
 <body>
   <header class="page-header">
     <h1>FeatherFlap Control Center</h1>
-    <p class="muted">Monitor both bird houses, review power data, and run diagnostics.</p>
+    <p class="muted">Monitor bird houses, tune runtime settings, and run diagnostics.</p>
   </header>
   <nav class="tabs" role="tablist">
     <button class="tab-button active" type="button" data-tab="home">Home</button>
     <button class="tab-button" type="button" data-tab="testing">Diagnostics</button>
+    <button class="tab-button" type="button" data-tab="config">Configuration</button>
   </nav>
   <main>
     <section id="home-tab" class="tab-panel active" role="tabpanel" aria-labelledby="home">
@@ -413,14 +570,120 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </section>
 
     <section id="testing-tab" class="tab-panel" role="tabpanel" aria-labelledby="testing">
-      <div class="testing-header">
-        <div>
-          <h2>Diagnostics</h2>
-          <p class="muted">Run individual tests or the full hardware suite.</p>
+      <article class="card">
+        <h2>System Specifications</h2>
+        <div class="system-grid">
+          <div>
+            <p class="muted">CPU Load (1m / 5m / 15m)</p>
+            <p class="spec-value" id="spec-load">--</p>
+          </div>
+          <div>
+            <p class="muted">Temperature</p>
+            <p class="spec-value" id="spec-temperature">--</p>
+          </div>
+          <div>
+            <p class="muted">Storage</p>
+            <p class="spec-value" id="spec-storage">--</p>
+            <div class="progress"><span id="storage-progress"></span></div>
+          </div>
+          <div>
+            <p class="muted">Memory</p>
+            <p class="spec-value" id="spec-memory">--</p>
+            <div class="progress"><span id="memory-progress"></span></div>
+          </div>
         </div>
-        <button id="run-all" type="button">Run full suite</button>
-      </div>
-      <div id="cards" class="grid" role="list"></div>
+        <div class="charts-grid">
+          <article class="card chart-card">
+            <h3>CPU Utilisation</h3>
+            <canvas id="chart-cpu" width="320" height="120" aria-label="CPU utilisation chart"></canvas>
+            <p class="muted" id="cpu-chart-label">--</p>
+          </article>
+          <article class="card chart-card">
+            <h3>Memory Usage</h3>
+            <canvas id="chart-ram" width="320" height="120" aria-label="Memory usage chart"></canvas>
+            <p class="muted" id="ram-chart-label">--</p>
+          </article>
+          <article class="card chart-card">
+            <h3>Temperature Trend</h3>
+            <canvas id="chart-temp" width="320" height="120" aria-label="Temperature chart"></canvas>
+            <p class="muted" id="temp-chart-label">--</p>
+          </article>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="testing-header">
+          <div>
+            <h2>Diagnostics</h2>
+            <p class="muted">Run individual tests or the full hardware suite.</p>
+          </div>
+          <button id="run-all" type="button">Run full suite</button>
+        </div>
+        <div id="diagnostic-accordion" class="diag-accordion" role="list"></div>
+      </article>
+    </section>
+
+    <section id="config-tab" class="tab-panel" role="tabpanel" aria-labelledby="config">
+      <form id="settings-form">
+        <div class="config-grid">
+          <article class="card">
+            <h2>Temperature</h2>
+            <label>
+              Display unit
+              <select id="temperature-unit"></select>
+            </label>
+            <p class="muted">Applies to environment readouts and charts.</p>
+          </article>
+          <article class="card">
+            <h2>PIR Sensors</h2>
+            <label>
+              GPIO pins (comma separated)
+              <input type="text" id="pir-pins" placeholder="17,27" />
+            </label>
+            <label>
+              Motion polling interval (seconds)
+              <input type="number" id="pir-interval" min="0.05" step="0.05" />
+            </label>
+          </article>
+          <article class="card">
+            <h2>Camera</h2>
+            <label>
+              Default device index
+              <input type="number" id="camera-device" min="0" />
+            </label>
+            <label>
+              Capture resolution (width × height)
+              <div style="display:flex; gap:0.5rem;">
+                <input type="number" id="camera-width" min="160" />
+                <input type="number" id="camera-height" min="120" />
+              </div>
+            </label>
+            <label>
+              Record FPS
+              <input type="number" id="camera-fps" min="1" step="0.5" />
+            </label>
+          </article>
+          <article class="card">
+            <h2>Recording</h2>
+            <label>
+              Storage path
+              <input type="text" id="recording-path" />
+            </label>
+            <label>
+              Max clip length (seconds)
+              <input type="number" id="recording-max" min="1" />
+            </label>
+            <label>
+              Cooldown between clips (seconds)
+              <input type="number" id="recording-gap" min="0" />
+            </label>
+          </article>
+        </div>
+        <div class="form-actions">
+          <button type="submit">Save settings</button>
+          <p id="settings-feedback" class="muted" aria-live="polite"></p>
+        </div>
+      </form>
     </section>
   </main>
 
@@ -429,7 +692,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       var tabButtons = Array.prototype.slice.call(document.querySelectorAll(".tab-button"));
       var panels = {
         home: document.getElementById("home-tab"),
-        testing: document.getElementById("testing-tab")
+        testing: document.getElementById("testing-tab"),
+        config: document.getElementById("config-tab")
       };
 
       function showTab(id) {
@@ -452,126 +716,77 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         });
       });
 
-      var defaultTabButton = null;
-      for (var i = 0; i < tabButtons.length; i += 1) {
-        if (tabButtons[i].classList.contains("active")) {
-          defaultTabButton = tabButtons[i];
-          break;
-        }
-      }
-      if (!defaultTabButton) {
-        defaultTabButton = tabButtons[0];
-      }
+      var defaultTabButton = tabButtons.find(function (btn) { return btn.classList.contains("active"); }) || tabButtons[0];
       if (defaultTabButton) {
         showTab(defaultTabButton.dataset.tab || "home");
       }
 
-      var cardsDiv = document.getElementById("cards");
-      var runAllButton = document.getElementById("run-all");
-
-      function createCard(test) {
-        var card = document.createElement("article");
-        card.className = "card";
-        card.id = "card-" + test.id;
-        card.innerHTML = [
-          "<h3>" + test.name + "</h3>",
-          "<p>" + test.description + "</p>",
-          '<button data-test="' + test.id + '" aria-label="Run ' + test.name + ' diagnostic">Run test</button>',
-          '<div class="status" id="status-' + test.id + '"></div>',
-          '<pre id="details-' + test.id + '" hidden></pre>'
-        ].join("");
-        return card;
-      }
-
-      function renderStatus(testId, result) {
-        var statusEl = document.getElementById("status-" + testId);
-        var detailsEl = document.getElementById("details-" + testId);
-        if (!statusEl || !detailsEl) {
-          return;
+      function createMiniChart(canvasId, color) {
+        var canvas = document.getElementById(canvasId);
+        if (!canvas || !canvas.getContext) {
+          return null;
         }
-        statusEl.className = "status " + result.status;
-        statusEl.textContent = result.status.toUpperCase() + ": " + result.summary;
-        if (result.details && Object.keys(result.details).length > 0) {
-          detailsEl.hidden = false;
-          detailsEl.textContent = JSON.stringify(result.details, null, 2);
-        } else {
-          detailsEl.hidden = true;
-          detailsEl.textContent = "";
-        }
-      }
-
-      async function fetchTests() {
-        if (!cardsDiv) {
-          return;
-        }
-        try {
-          const response = await fetch("/api/tests");
-          if (!response.ok) {
-            throw new Error("HTTP " + response.status);
-          }
-          const tests = await response.json();
-          tests.forEach(function (test) {
-            cardsDiv.appendChild(createCard(test));
-          });
-        } catch (error) {
-          console.error("Failed to load tests:", error);
-        }
-      }
-
-      async function runTest(testId) {
-        try {
-          const response = await fetch("/api/tests/" + testId, { method: "POST" });
-          if (!response.ok) {
-            renderStatus(testId, { status: "error", summary: "Request failed: " + response.status, details: {} });
+        var context = canvas.getContext("2d");
+        var maxPoints = 60;
+        var data = [];
+        function draw() {
+          var width = canvas.width;
+          var height = canvas.height;
+          context.clearRect(0, 0, width, height);
+          if (data.length < 2) {
             return;
           }
-          const payload = await response.json();
-          renderStatus(testId, payload.result);
-        } catch (error) {
-          renderStatus(testId, { status: "error", summary: "Request failed: " + error.message, details: {} });
-        }
-      }
-
-      async function runAll() {
-        if (!runAllButton) {
-          return;
-        }
-        runAllButton.disabled = true;
-        runAllButton.textContent = "Running...";
-        try {
-          const response = await fetch("/api/tests/run-all", { method: "POST" });
-          if (!response.ok) {
-            throw new Error("HTTP " + response.status);
+          var min = Math.min.apply(null, data);
+          var max = Math.max.apply(null, data);
+          if (min === max) {
+            max += 1;
+            min -= 1;
           }
-          const payload = await response.json();
-          if (payload.results) {
-            payload.results.forEach(function (result) {
-              renderStatus(result.id, result);
-            });
-          }
-          window.alert("Full suite finished. Overall status: " + (payload.overall_status || "unknown").toUpperCase());
-        } catch (error) {
-          window.alert("Failed to run diagnostics: " + error.message);
-        } finally {
-          runAllButton.disabled = false;
-          runAllButton.textContent = "Run full suite";
+          context.beginPath();
+          data.forEach(function (value, index) {
+            var x = (index / (data.length - 1)) * width;
+            var y = height - ((value - min) / (max - min)) * height;
+            if (index === 0) {
+              context.moveTo(x, y);
+            } else {
+              context.lineTo(x, y);
+            }
+          });
+          context.strokeStyle = color;
+          context.lineWidth = 2;
+          context.stroke();
         }
-      }
-
-      if (runAllButton) {
-        runAllButton.addEventListener("click", runAll);
-      }
-
-      if (cardsDiv) {
-        cardsDiv.addEventListener("click", function (event) {
-          var target = event.target;
-          if (target.tagName === "BUTTON" && target.dataset.test) {
-            runTest(target.dataset.test);
+        return {
+          push: function (value) {
+            if (typeof value !== "number" || isNaN(value)) {
+              return;
+            }
+            data.push(value);
+            if (data.length > maxPoints) {
+              data.shift();
+            }
+            draw();
           }
-        });
+        };
       }
 
-      fetchTests();
+      var charts = {
+        cpu: createMiniChart("chart-cpu", "#2563eb"),
+        ram: createMiniChart("chart-ram", "#16a34a"),
+        temp: createMiniChart("chart-temp", "#dc2626")
+      };
+
+      var diagnosticAccordion = document.getElementById("diagnostic-accordion");
+      var runAllButton = document.getElementById("run-all");
+      var diagStatusLabels = {
+        ok: { text: "Passed", className: "diag-pill-pass" },
+        error: { text: "Failed", className: "diag-pill-fail" },
+        warning: { text: "Information", className: "diag-pill-info" },
+        skipped: { text: "Information", className: "diag-pill-info" }
+      };
+
+      var runtimeSettings = null;
+      var availableTemperatureUnits = [];
 
       var cameraRadios = document.querySelectorAll('input[name="camera-select"]');
       var cameraImg = document.getElementById("camera-stream");
@@ -609,6 +824,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       var rgbLedHold = document.getElementById("rgb-led-hold");
       var rgbLedFeedback = document.getElementById("rgb-led-feedback");
 
+      var specLoad = document.getElementById("spec-load");
+      var specTemperature = document.getElementById("spec-temperature");
+      var specStorage = document.getElementById("spec-storage");
+      var specMemory = document.getElementById("spec-memory");
+      var storageProgress = document.getElementById("storage-progress");
+      var memoryProgress = document.getElementById("memory-progress");
+      var cpuChartLabel = document.getElementById("cpu-chart-label");
+      var ramChartLabel = document.getElementById("ram-chart-label");
+      var tempChartLabel = document.getElementById("temp-chart-label");
+
+      var temperatureUnitField = document.getElementById("temperature-unit");
+      var pirPinsField = document.getElementById("pir-pins");
+      var pirIntervalField = document.getElementById("pir-interval");
+      var cameraDeviceField = document.getElementById("camera-device");
+      var cameraWidthField = document.getElementById("camera-width");
+      var cameraHeightField = document.getElementById("camera-height");
+      var cameraFpsField = document.getElementById("camera-fps");
+      var recordingPathField = document.getElementById("recording-path");
+      var recordingMaxField = document.getElementById("recording-max");
+      var recordingGapField = document.getElementById("recording-gap");
+      var settingsForm = document.getElementById("settings-form");
+      var settingsFeedback = document.getElementById("settings-feedback");
+
       var activeCamera = null;
       var latestPirStates = {};
       var pirPinOrder = [];
@@ -633,8 +871,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         cameraStatus.classList.toggle("danger", !!isError);
       }
 
+      function temperatureUnitSuffix() {
+        var unit = (runtimeSettings && runtimeSettings.temperature && runtimeSettings.temperature.unit) || "celsius";
+        if (unit === "fahrenheit") {
+          return "°F";
+        }
+        if (unit === "kelvin") {
+          return "K";
+        }
+        return "°C";
+      }
+
+      function convertTemperatureValue(value) {
+        if (typeof value !== "number" || isNaN(value)) {
+          return null;
+        }
+        var unit = (runtimeSettings && runtimeSettings.temperature && runtimeSettings.temperature.unit) || "celsius";
+        if (unit === "fahrenheit") {
+          return value * 9 / 5 + 32;
+        }
+        if (unit === "kelvin") {
+          return value + 273.15;
+        }
+        return value;
+      }
+
       function updateHouseRows() {
-        houseRows.forEach(function (house) {
+        houseRows.forEach(function (house, index) {
           if (!house || !house.cameraCell) {
             return;
           }
@@ -643,12 +906,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           } else {
             setBadge(house.cameraCell, "Standby", "status-idle");
           }
-          if (!house.pirState) {
-            return;
-          }
-          var pin = pirPinOrder[house.order];
-          if (typeof pin === "undefined") {
-            setBadge(house.pirState, "Unavailable", "status-alert");
+          var pin = pirPinOrder[index];
+          if (pin === undefined) {
+            if (house.pirState) {
+              setBadge(house.pirState, "Pending", "status-idle");
+            }
             if (house.pirPinLabel) {
               house.pirPinLabel.textContent = "";
             }
@@ -746,6 +1008,266 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         return unit ? text + " " + unit : text;
       }
 
+      function formatBytes(bytes) {
+        if (typeof bytes !== "number" || isNaN(bytes)) {
+          return "--";
+        }
+        var units = ["B", "KB", "MB", "GB", "TB"];
+        var index = 0;
+        var value = bytes;
+        while (value >= 1024 && index < units.length - 1) {
+          value /= 1024;
+          index += 1;
+        }
+        return value.toFixed(value >= 10 || index === 0 ? 0 : 1) + " " + units[index];
+      }
+
+      function populateTemperatureSelect(options) {
+        if (!temperatureUnitField || !options || !options.length) {
+          return;
+        }
+        temperatureUnitField.innerHTML = "";
+        options.forEach(function (opt) {
+          var option = document.createElement("option");
+          option.value = opt;
+          option.textContent = opt.charAt(0).toUpperCase() + opt.slice(1);
+          temperatureUnitField.appendChild(option);
+        });
+      }
+
+      function populateSettingsForm(snapshot) {
+        if (!snapshot) {
+          return;
+        }
+        runtimeSettings = snapshot;
+        if (temperatureUnitField && snapshot.temperature) {
+          temperatureUnitField.value = snapshot.temperature.unit;
+        }
+        if (pirPinsField && snapshot.pir) {
+          pirPinsField.value = (snapshot.pir.pins || []).join(", ");
+        }
+        if (pirIntervalField && snapshot.pir) {
+          pirIntervalField.value = snapshot.pir.motion_poll_interval_seconds;
+        }
+        if (cameraDeviceField && snapshot.camera) {
+          cameraDeviceField.value = snapshot.camera.device ?? "";
+        }
+        if (cameraWidthField && snapshot.camera) {
+          cameraWidthField.value = snapshot.camera.record_width;
+        }
+        if (cameraHeightField && snapshot.camera) {
+          cameraHeightField.value = snapshot.camera.record_height;
+        }
+        if (cameraFpsField && snapshot.camera) {
+          cameraFpsField.value = snapshot.camera.record_fps;
+        }
+        if (recordingPathField && snapshot.recording) {
+          recordingPathField.value = snapshot.recording.path;
+        }
+        if (recordingMaxField && snapshot.recording) {
+          recordingMaxField.value = snapshot.recording.max_seconds;
+        }
+        if (recordingGapField && snapshot.recording) {
+          recordingGapField.value = snapshot.recording.min_gap_seconds;
+        }
+        pirPinOrder = (snapshot.pir && snapshot.pir.pins) ? snapshot.pir.pins.slice(0, houseRows.length) : [];
+        updateHouseRows();
+      }
+
+      async function fetchSettings() {
+        try {
+          const response = await fetch("/api/config", { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+          const payload = await response.json();
+          availableTemperatureUnits = payload.temperature.available_units || [];
+          populateTemperatureSelect(availableTemperatureUnits);
+          populateSettingsForm(payload);
+        } catch (error) {
+          console.error("Failed to load configuration", error);
+        }
+      }
+
+      function parsePins(input) {
+        if (!input) {
+          return [];
+        }
+        return input
+          .split(/[,\s]+/)
+          .map(function (item) { return item.trim(); })
+          .filter(Boolean)
+          .map(function (value) {
+            var parsed = parseInt(value, 10);
+            return isNaN(parsed) ? null : parsed;
+          })
+          .filter(function (value) { return value !== null; });
+      }
+
+      async function submitSettings(event) {
+        event.preventDefault();
+        if (settingsFeedback) {
+          settingsFeedback.textContent = "Saving settings...";
+          settingsFeedback.classList.remove("feedback-success", "feedback-error");
+        }
+        var payload = {
+          temperature: {
+            unit: temperatureUnitField ? temperatureUnitField.value : "celsius"
+          },
+          pir: {
+            pins: parsePins(pirPinsField ? pirPinsField.value : ""),
+            motion_poll_interval_seconds: parseFloat(pirIntervalField ? pirIntervalField.value : "0.25") || 0.25
+          },
+          camera: {
+            device: cameraDeviceField && cameraDeviceField.value !== "" ? parseInt(cameraDeviceField.value, 10) : null,
+            record_width: parseInt(cameraWidthField ? cameraWidthField.value : "0", 10) || 640,
+            record_height: parseInt(cameraHeightField ? cameraHeightField.value : "0", 10) || 480,
+            record_fps: parseFloat(cameraFpsField ? cameraFpsField.value : "0") || 15
+          },
+          recording: {
+            path: recordingPathField ? recordingPathField.value : "recordings",
+            max_seconds: parseInt(recordingMaxField ? recordingMaxField.value : "0", 10) || 30,
+            min_gap_seconds: parseInt(recordingGapField ? recordingGapField.value : "0", 10) || 45
+          }
+        };
+        try {
+          const response = await fetch("/api/config", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+          const updated = await response.json();
+          populateSettingsForm(updated);
+          if (settingsFeedback) {
+            settingsFeedback.textContent = updated.message || "Settings updated.";
+            settingsFeedback.classList.add("feedback-success");
+          }
+          refreshEnvironment();
+          refreshSystemStatus();
+        } catch (error) {
+          if (settingsFeedback) {
+            settingsFeedback.textContent = "Failed to save settings: " + error.message;
+            settingsFeedback.classList.add("feedback-error");
+          }
+        }
+      }
+
+      if (settingsForm) {
+        settingsForm.addEventListener("submit", submitSettings);
+      }
+
+      function createDiagnosticItem(test) {
+        var details = document.createElement("details");
+        details.className = "diagnostic-item";
+        details.dataset.testId = test.id;
+        details.innerHTML =
+          '<summary>' +
+          '<div><h3>' + test.name + '</h3><p class="muted">' + test.description + '</p></div>' +
+          '<span class="diag-pill diag-pill-info" id="pill-' + test.id + '">Information</span>' +
+          '</summary>' +
+          '<div class="diag-body">' +
+          '<button type="button" class="diag-run" data-test="' + test.id + '">Run test</button>' +
+          '<p class="diag-summary" id="status-' + test.id + '">No results yet.</p>' +
+          '<pre id="details-' + test.id + '" hidden></pre>' +
+          '</div>';
+        return details;
+      }
+
+      function renderStatus(testId, result) {
+        var statusEl = document.getElementById("status-" + testId);
+        var detailsEl = document.getElementById("details-" + testId);
+        var pillEl = document.getElementById("pill-" + testId);
+        if (!statusEl || !detailsEl || !pillEl) {
+          return;
+        }
+        var map = diagStatusLabels[(result.status || "info").toLowerCase()] || diagStatusLabels.warning;
+        pillEl.textContent = map.text;
+        pillEl.className = "diag-pill " + map.className;
+        statusEl.textContent = (result.status || "info").toUpperCase() + ": " + (result.summary || "No summary available.");
+        if (result.details && Object.keys(result.details).length > 0) {
+          detailsEl.hidden = false;
+          detailsEl.textContent = JSON.stringify(result.details, null, 2);
+        } else {
+          detailsEl.hidden = true;
+          detailsEl.textContent = "";
+        }
+      }
+
+      async function fetchTests() {
+        if (!diagnosticAccordion) {
+          return;
+        }
+        diagnosticAccordion.innerHTML = "";
+        try {
+          const response = await fetch("/api/tests");
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+          const tests = await response.json();
+          tests.forEach(function (test) {
+            diagnosticAccordion.appendChild(createDiagnosticItem(test));
+          });
+        } catch (error) {
+          console.error("Failed to load tests:", error);
+        }
+      }
+
+      async function runTest(testId) {
+        try {
+          const response = await fetch("/api/tests/" + testId, { method: "POST" });
+          if (!response.ok) {
+            renderStatus(testId, { status: "error", summary: "Request failed: " + response.status, details: {} });
+            return;
+          }
+          const payload = await response.json();
+          renderStatus(testId, payload.result);
+        } catch (error) {
+          renderStatus(testId, { status: "error", summary: "Request failed: " + error.message, details: {} });
+        }
+      }
+
+      async function runAll() {
+        if (!runAllButton) {
+          return;
+        }
+        runAllButton.disabled = true;
+        runAllButton.textContent = "Running...";
+        try {
+          const response = await fetch("/api/tests/run-all", { method: "POST" });
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+          const payload = await response.json();
+          if (payload.results) {
+            payload.results.forEach(function (result) {
+              renderStatus(result.id, result);
+            });
+          }
+          window.alert("Full suite finished. Overall status: " + (payload.overall_status || "unknown").toUpperCase());
+        } catch (error) {
+          window.alert("Failed to run diagnostics: " + error.message);
+        } finally {
+          runAllButton.disabled = false;
+          runAllButton.textContent = "Run full suite";
+        }
+      }
+
+      if (runAllButton) {
+        runAllButton.addEventListener("click", runAll);
+      }
+
+      if (diagnosticAccordion) {
+        diagnosticAccordion.addEventListener("click", function (event) {
+          var target = event.target;
+          if (target.tagName === "BUTTON" && target.dataset.test) {
+            runTest(target.dataset.test);
+          }
+        });
+      }
+
       async function refreshEnvironment() {
         if (!envTemp || !envHumidity || !envPressure) {
           return;
@@ -763,11 +1285,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           var temperature = typeof aht.temperature_c === "number" ? aht.temperature_c : (typeof bmp.temperature_c === "number" ? bmp.temperature_c : null);
           var humidity = typeof aht.humidity_pct === "number" ? aht.humidity_pct : null;
           var pressure = typeof bmp.pressure_hpa === "number" ? bmp.pressure_hpa : null;
-
-          envTemp.textContent = formatValue(temperature, "°C", 1);
+          var convertedTemp = convertTemperatureValue(temperature);
+          envTemp.textContent = typeof convertedTemp === "number" ? convertedTemp.toFixed(1) + " " + temperatureUnitSuffix() : "--";
           envHumidity.textContent = formatValue(humidity, "%", 1);
           envPressure.textContent = formatValue(pressure, "hPa", 1);
-
           if (envStatus) {
             if (Object.keys(errors).length) {
               var errorMessages = Object.keys(errors)
@@ -834,18 +1355,92 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             .map(function (key) { return parseInt(key, 10); })
             .filter(function (value) { return !isNaN(value); })
             .sort(function (a, b) { return a - b; });
-          pirPinOrder = pins;
+          pirPinOrder = pins.slice(0, houseRows.length);
           if (pirStatus) {
             pirStatus.textContent = pins.length ? "" : "No PIR sensors detected.";
           }
           updateHouseRows();
         } catch (error) {
           latestPirStates = {};
-          pirPinOrder = [];
           if (pirStatus) {
             pirStatus.textContent = "PIR sensors unavailable: " + error.message;
           }
           updateHouseRows();
+        }
+      }
+
+      async function refreshSystemStatus() {
+        try {
+          const response = await fetch("/api/status/system", { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+          const payload = await response.json();
+          if (specLoad) {
+            var loadValues = payload.load || {};
+            specLoad.textContent = [loadValues["1m"], loadValues["5m"], loadValues["15m"]]
+              .map(function (value) {
+                return typeof value === "number" ? value.toFixed(2) : "--";
+              })
+              .join(" / ");
+          }
+          if (specTemperature) {
+            var preferred = payload.temperature && payload.temperature.preferred ? payload.temperature.preferred : null;
+            if (preferred && typeof preferred.value === "number") {
+              specTemperature.textContent = preferred.value.toFixed(1) + " " + temperatureUnitSuffix();
+            } else {
+              specTemperature.textContent = "--";
+            }
+          }
+          if (specStorage) {
+            var storage = payload.storage || {};
+            var used = storage.used_bytes;
+            var total = storage.total_bytes;
+            if (typeof used === "number" && typeof total === "number") {
+              var percent = total > 0 ? (used / total) * 100 : 0;
+              specStorage.textContent = formatBytes(used) + " of " + formatBytes(total) + " (" + percent.toFixed(1) + "%)";
+              if (storageProgress) {
+                storageProgress.style.width = Math.min(100, Math.max(0, percent)) + "%";
+              }
+            } else {
+              specStorage.textContent = "--";
+            }
+          }
+          if (specMemory) {
+            var memory = payload.memory || {};
+            var memUsed = memory.used_bytes;
+            var memTotal = memory.total_bytes;
+            if (typeof memUsed === "number" && typeof memTotal === "number") {
+              var memPercent = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
+              specMemory.textContent = formatBytes(memUsed) + " of " + formatBytes(memTotal) + " (" + memPercent.toFixed(1) + "%)";
+              if (memoryProgress) {
+                memoryProgress.style.width = Math.min(100, Math.max(0, memPercent)) + "%";
+              }
+            } else {
+              specMemory.textContent = "--";
+            }
+          }
+          if (charts.cpu && typeof payload.cpu_percent === "number") {
+            charts.cpu.push(payload.cpu_percent);
+            if (cpuChartLabel) {
+              cpuChartLabel.textContent = payload.cpu_percent.toFixed(1) + "%";
+            }
+          }
+          if (charts.ram && payload.memory && typeof payload.memory.percent_used === "number") {
+            charts.ram.push(payload.memory.percent_used);
+            if (ramChartLabel) {
+              ramChartLabel.textContent = payload.memory.percent_used.toFixed(1) + "%";
+            }
+          }
+          var displayTemperature = payload.temperature && payload.temperature.preferred ? payload.temperature.preferred.value : null;
+          if (charts.temp && typeof displayTemperature === "number") {
+            charts.temp.push(displayTemperature);
+            if (tempChartLabel) {
+              tempChartLabel.textContent = displayTemperature.toFixed(1) + " " + temperatureUnitSuffix();
+            }
+          }
+        } catch (error) {
+          console.warn("System status unavailable:", error);
         }
       }
 
@@ -861,12 +1456,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         pollTimers.push(setInterval(refreshPirStatus, 10000));
         pollTimers.push(setInterval(refreshEnvironment, 15000));
         pollTimers.push(setInterval(refreshPowerStatus, 20000));
+        pollTimers.push(setInterval(refreshSystemStatus, 5000));
       }
-
-      refreshPirStatus();
-      refreshEnvironment();
-      refreshPowerStatus();
-      schedulePolling();
 
       if (rgbLedForm) {
         rgbLedForm.addEventListener("submit", async function (event) {
@@ -926,10 +1517,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           }
         });
       }
+
+      fetchSettings().then(function () {
+        refreshPirStatus();
+        refreshEnvironment();
+        refreshPowerStatus();
+        refreshSystemStatus();
+        schedulePolling();
+      });
+      fetchTests();
     })();
   </script>
 </body>
 </html>
+
 """
 
 
@@ -986,12 +1587,234 @@ def _aggregate_status(results: List[Dict[str, str]]) -> str:
     return HardwareStatus.OK.value
 
 
+def _serialize_runtime_config(settings) -> Dict[str, Any]:
+    """Normalise runtime settings into a frontend-friendly payload."""
+
+    return {
+        "temperature": {
+            "unit": settings.temperature_unit.value,
+            "available_units": [unit.value for unit in TemperatureUnit],
+        },
+        "pir": {
+            "pins": list(settings.pir_pins),
+            "motion_poll_interval_seconds": settings.motion_poll_interval_seconds,
+        },
+        "camera": {
+            "device": settings.camera_device,
+            "record_width": settings.camera_record_width,
+            "record_height": settings.camera_record_height,
+            "record_fps": settings.camera_record_fps,
+        },
+        "recording": {
+            "path": str(settings.recordings_path),
+            "max_seconds": settings.recording_max_seconds,
+            "min_gap_seconds": settings.recording_min_gap_seconds,
+        },
+    }
+
+
+_CPU_TIMES: Optional[tuple[int, int]] = None
+
+
+def _read_cpu_times() -> Optional[tuple[int, int]]:
+    """Read total and idle CPU times from /proc/stat."""
+
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("cpu "):
+                    parts = line.split()
+                    values = [int(value) for value in parts[1:]]
+                    if len(values) < 4:
+                        return None
+                    idle = values[3] + (values[4] if len(values) > 4 else 0)
+                    total = sum(values)
+                    return total, idle
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _cpu_percent() -> Optional[float]:
+    """Compute CPU utilisation between successive calls."""
+
+    global _CPU_TIMES
+    current = _read_cpu_times()
+    if current is None:
+        return None
+    previous = _CPU_TIMES
+    _CPU_TIMES = current
+    if previous is None:
+        return None
+    total_diff = current[0] - previous[0]
+    idle_diff = current[1] - previous[1]
+    if total_diff <= 0:
+        return None
+    busy = total_diff - idle_diff
+    percent = (busy / total_diff) * 100.0
+    return max(0.0, min(100.0, percent))
+
+
+def _memory_snapshot() -> Dict[str, Optional[float]]:
+    """Return memory statistics derived from /proc/meminfo."""
+
+    snapshot: Dict[str, Optional[float]] = {
+        "total_bytes": None,
+        "available_bytes": None,
+        "used_bytes": None,
+        "percent_used": None,
+    }
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+            meminfo: Dict[str, int] = {}
+            for line in handle:
+                parts = line.strip().split(":")
+                if len(parts) != 2:
+                    continue
+                key = parts[0]
+                value_tokens = parts[1].strip().split()
+                if not value_tokens:
+                    continue
+                try:
+                    meminfo[key] = int(value_tokens[0]) * 1024  # values are in kB
+                except ValueError:
+                    continue
+        total = meminfo.get("MemTotal")
+        available = meminfo.get("MemAvailable")
+        if total is not None and available is not None:
+            used = total - available
+            percent = (used / total) * 100 if total else None
+            snapshot.update(
+                {
+                    "total_bytes": float(total),
+                    "available_bytes": float(available),
+                    "used_bytes": float(used),
+                    "percent_used": float(percent) if percent is not None else None,
+                }
+            )
+    except OSError:
+        return snapshot
+    return snapshot
+
+
+def _storage_snapshot(recordings_path: Path) -> Dict[str, Optional[float]]:
+    """Return disk usage information for the recordings path or its nearest parent."""
+
+    path = recordings_path
+    try:
+        resolved = path.expanduser()
+    except OSError:
+        resolved = Path("/")
+    probe = resolved if resolved.exists() else resolved.parent
+    if not probe.exists():
+        probe = Path("/")
+    try:
+        usage = shutil.disk_usage(probe)
+    except OSError:
+        return {"path": str(probe), "total_bytes": None, "used_bytes": None, "free_bytes": None}
+    used = usage.total - usage.free
+    return {
+        "path": str(probe),
+        "total_bytes": float(usage.total),
+        "used_bytes": float(used),
+        "free_bytes": float(usage.free),
+    }
+
+
+def _read_temperature_sensor() -> Optional[float]:
+    """Read SoC temperature (°C) from standard thermal zone paths."""
+
+    candidates = (
+        Path("/sys/class/thermal/thermal_zone0/temp"),
+        Path("/sys/class/hwmon/hwmon0/temp1_input"),
+    )
+    for candidate in candidates:
+        try:
+            raw = candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        if value > 200:
+            value /= 1000.0
+        return value
+    return None
+
+
+def _collect_system_status(settings) -> Dict[str, object]:
+    """Gather CPU, memory, storage, and thermal metrics."""
+
+    try:
+        load1, load5, load15 = os.getloadavg()
+        load = {"1m": load1, "5m": load5, "15m": load15}
+    except OSError:
+        load = {"1m": None, "5m": None, "15m": None}
+    memory = _memory_snapshot()
+    storage = _storage_snapshot(settings.recordings_path)
+    temperature_c = _read_temperature_sensor()
+    preferred = (
+        convert_temperature(temperature_c, settings.temperature_unit) if temperature_c is not None else None
+    )
+    status: Dict[str, object] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "load": load,
+        "cpu_percent": _cpu_percent(),
+        "cpu_count": os.cpu_count(),
+        "memory": memory,
+        "storage": storage,
+        "temperature": {
+            "celsius": temperature_c,
+            "preferred": {
+                "unit": settings.temperature_unit.value,
+                "value": preferred,
+            },
+        },
+    }
+    return status
+
+
 @router.get("/", response_class=HTMLResponse)
 async def dashboard() -> HTMLResponse:
     """Serve the HTML dashboard."""
 
     logger.debug("Serving dashboard HTML")
     return HTMLResponse(content=DASHBOARD_HTML)
+
+
+@router.get("/api/config")
+async def read_configuration() -> Dict[str, Any]:
+    """Return the current runtime configuration snapshot."""
+
+    settings = get_settings()
+    logger.debug("Providing configuration snapshot")
+    return _serialize_runtime_config(settings)
+
+
+@router.put("/api/config")
+async def write_configuration(payload: ConfigurationUpdateRequest) -> Dict[str, Any]:
+    """Update runtime configuration and refresh the cached settings."""
+
+    logger.info("Applying runtime configuration update")
+    updates: Dict[str, Any] = {
+        "temperature_unit": payload.temperature.unit,
+        "pir_pins": payload.pir.pins,
+        "motion_poll_interval_seconds": payload.pir.motion_poll_interval_seconds,
+        "camera_device": payload.camera.device,
+        "camera_record_width": payload.camera.record_width,
+        "camera_record_height": payload.camera.record_height,
+        "camera_record_fps": payload.camera.record_fps,
+        "recordings_path": payload.recording.path,
+        "recording_max_seconds": payload.recording.max_seconds,
+        "recording_min_gap_seconds": payload.recording.min_gap_seconds,
+    }
+    settings = update_settings(updates)
+    response = _serialize_runtime_config(settings)
+    response["message"] = "Settings updated."
+    return response
 
 
 @router.get("/api/tests")
@@ -1029,13 +1852,34 @@ async def environment_status() -> Dict[str, object]:
         status = HardwareStatus.WARNING.value
     else:
         status = HardwareStatus.OK.value
+    if snapshot.results:
+        sensor_aht = snapshot.results.get("aht20") or {}
+        sensor_bmp = snapshot.results.get("bmp280") or {}
+        temperature_c = sensor_aht.get("temperature_c")
+        if temperature_c is None:
+            temperature_c = sensor_bmp.get("temperature_c")
+    else:
+        temperature_c = None
+
     logger.info(
         "Environment snapshot completed with status=%s (results=%d errors=%d)",
         status,
         len(snapshot.results),
         len(snapshot.errors),
     )
-    return {"status": status, "results": snapshot.results, "errors": snapshot.errors}
+    return {
+        "status": status,
+        "results": snapshot.results,
+        "errors": snapshot.errors,
+        "display": {
+            "temperature": {
+                "value": convert_temperature(temperature_c, settings.temperature_unit)
+                if temperature_c is not None
+                else None,
+                "unit": settings.temperature_unit.value,
+            }
+        },
+    }
 
 
 @router.get("/api/status/pir")
@@ -1089,6 +1933,14 @@ async def ups_status() -> Dict[str, object]:
         details.get("current_ma"),
     )
     return {"status": HardwareStatus.OK.value, "readings": details}
+
+
+@router.get("/api/status/system")
+async def system_status() -> Dict[str, object]:
+    """Return CPU load, memory, storage, and temperature statistics."""
+
+    settings = get_settings()
+    return _collect_system_status(settings)
 
 
 @router.get("/api/camera/frame")

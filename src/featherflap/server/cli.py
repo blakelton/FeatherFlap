@@ -9,7 +9,7 @@ from click.core import UNSET
 import typer
 import uvicorn
 
-from ..config import OperationMode, get_settings
+from ..config import OperationMode, get_settings, reload_settings
 from ..logger import configure_logging, get_logger
 
 app = typer.Typer(add_completion=False, help="FeatherFlap diagnostics tooling.")
@@ -53,7 +53,7 @@ def serve(
     reload_override = _parse_optional_bool(reload)
     if mode is not None:
         os.environ["FEATHERFLAP_MODE"] = mode.value
-        get_settings.cache_clear()
+        reload_settings()
     settings = get_settings()
     configure_logging(settings)
     logger = get_logger(__name__)
