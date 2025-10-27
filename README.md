@@ -209,7 +209,7 @@ Useful API routes once the server is running:
 
 The `/` dashboard now exposes three dedicated tabs:
 
-- **Home** – live camera selection (CSI ribbon for House 1, USB for House 2), PIR state, environment snapshot, UPS telemetry, and a quick RGB LED test.
+- **Home** – live camera selection (CSI ribbon for House 1, USB for House 2), PIR state, environment snapshot, UPS telemetry, and learned battery telemetry (SoC, runtime to empty/full, effective capacity) powered by the estimator.
 - **Diagnostics** – system specifications (CPU load, temperature in your preferred unit, disk + memory usage) presented with micro charts, plus an accordion view of every hardware diagnostic. Expand any test to see structured details; the “Run full suite” button summarises pass/fail/ informational states.
 - **Configuration** – modify runtime settings without restarting the service. You can adjust temperature units, PIR pins, camera defaults, and recording limits directly from the browser. Saving updates immediately refreshes `AppSettings` in memory, so the rest of the app sees changes on the next request.
 

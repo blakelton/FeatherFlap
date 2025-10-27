@@ -9,7 +9,8 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 import featherflap.server.routes as routes
-from featherflap.hardware import PIRUnavailable, RGBLedUnavailable, PicameraUnavailable, CameraUnavailable
+from featherflap.hardware import BatteryEstimator, PIRUnavailable, RGBLedUnavailable, PicameraUnavailable, CameraUnavailable
+from featherflap.hardware.power import UPSReadings
 from featherflap.server.app import create_application
 import featherflap.config as config
 
@@ -26,6 +27,17 @@ def runtime_config_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "settings.json"
     monkeypatch.setattr(config, "RUNTIME_CONFIG_PATH", path, raising=False)
     config._SETTINGS = None
+    estimator = BatteryEstimator(data_dir=tmp_path / "battery")
+    monkeypatch.setattr(routes, "BATTERY_ESTIMATOR", estimator)
+
+    class DummyLock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(routes, "BATTERY_LOCK", DummyLock())
     yield
     config._SETTINGS = None
 
@@ -164,6 +176,32 @@ def test_camera_stream_usb_success(client: TestClient, monkeypatch: pytest.Monke
     assert response.status_code == 200
     payload = b"".join(response.iter_content(chunk_size=None))
     assert b"TEST" in payload
+
+
+def test_ups_status_includes_battery(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    reading = UPSReadings(address=0x40, bus_voltage_v=3.9, current_ma=-120.0, power_mw=-468.0, flow="discharging")
+
+    def fake_read_ups(*_args, **_kwargs):
+        return reading
+
+    class FakeEstimator:
+        def record_sample(self, **_kwargs):
+            return SimpleNamespace(
+                soc_pct=55.0,
+                voltage_soc_pct=50.0,
+                coulomb_soc_pct=52.0,
+                capacity_mah=9500,
+                time_to_empty_hours=4.0,
+                time_to_full_hours=None,
+                samples_recorded=5,
+            )
+
+    monkeypatch.setattr(routes, "read_ups", fake_read_ups)
+    monkeypatch.setattr(routes, "BATTERY_ESTIMATOR", FakeEstimator())
+    response = client.get("/api/status/ups")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["battery"]["soc_pct"] == 55.0
 
 
 def test_read_configuration_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

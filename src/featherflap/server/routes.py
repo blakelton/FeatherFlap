@@ -8,6 +8,8 @@ import os
 from contextlib import nullcontext
 from pathlib import Path
 import shutil
+import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -32,6 +34,7 @@ from ..hardware import (
     HardwareTestResult,
     PIRUnavailable,
     RGBLedUnavailable,
+    BatteryEstimator,
     capture_jpeg_frame,
     mjpeg_stream,
     PicameraUnavailable,
@@ -48,6 +51,8 @@ from ..runtime import CameraBusyError
 
 router = APIRouter()
 logger = get_logger(__name__)
+BATTERY_ESTIMATOR = BatteryEstimator()
+BATTERY_LOCK = threading.Lock()
 
 STATUS_PRIORITY = {
     HardwareStatus.ERROR.value: 3,
@@ -168,6 +173,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       padding: 1rem;
       background: rgba(255,255,255,0.05);
       box-shadow: 0 1px 2px rgba(15,23,42,0.08);
+    }
+    .led-card {
+      border: 1px solid rgba(0,0,0,0.1);
+      border-radius: 12px;
+      padding: 1rem;
+      background: rgba(255,255,255,0.05);
+      box-shadow: 0 1px 2px rgba(15,23,42,0.08);
+      margin-bottom: 1rem;
     }
     .card h2 {
       margin-top: 0;
@@ -556,25 +569,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <dt>Flow</dt>
               <dd id="power-flow">--</dd>
             </div>
+            <div>
+              <dt>Battery</dt>
+              <dd id="battery-soc">--</dd>
+            </div>
+            <div>
+              <dt>Runtime</dt>
+              <dd id="battery-runtime">--</dd>
+            </div>
+            <div>
+              <dt>Charge Time</dt>
+              <dd id="battery-charge-time">--</dd>
+            </div>
+            <div>
+              <dt>Capacity</dt>
+              <dd id="battery-capacity">--</dd>
+            </div>
           </dl>
           <p id="power-status" class="muted"></p>
         </article>
 
-        <article class="card">
-          <h2>RGB LED Test</h2>
-          <form id="rgb-led-form">
-            <label>
-              Color
-              <input type="color" id="rgb-led-picker" value="#ff0000" />
-            </label>
-            <label>
-              Hold (seconds)
-              <input type="number" id="rgb-led-hold" min="0" max="10" step="0.1" value="1" />
-            </label>
-            <button type="submit">Test Color</button>
-          </form>
-          <p id="rgb-led-feedback" class="muted"></p>
-        </article>
       </section>
     </section>
 
@@ -627,6 +641,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <p class="muted">Run individual tests or the full hardware suite.</p>
           </div>
           <button id="run-all" type="button">Run full suite</button>
+        </div>
+        <div class="led-card">
+          <h3>RGB LED Test</h3>
+          <form id="rgb-led-form">
+            <label>
+              Color
+              <input type="color" id="rgb-led-picker" value="#ff0000" />
+            </label>
+            <label>
+              Hold (seconds)
+              <input type="number" id="rgb-led-hold" min="0" max="10" step="0.1" value="1" />
+            </label>
+            <button type="submit">Test Color</button>
+          </form>
+          <p id="rgb-led-feedback" class="muted"></p>
         </div>
         <div id="diagnostic-accordion" class="diag-accordion" role="list"></div>
       </article>
@@ -832,6 +861,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       var powerConsumption = document.getElementById("power-consumption");
       var powerFlow = document.getElementById("power-flow");
       var powerStatus = document.getElementById("power-status");
+      var batterySoc = document.getElementById("battery-soc");
+      var batteryRuntime = document.getElementById("battery-runtime");
+      var batteryChargeTime = document.getElementById("battery-charge-time");
+      var batteryCapacity = document.getElementById("battery-capacity");
       var rgbLedForm = document.getElementById("rgb-led-form");
       var rgbLedPicker = document.getElementById("rgb-led-picker");
       var rgbLedHold = document.getElementById("rgb-led-hold");
@@ -1082,6 +1115,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           index += 1;
         }
         return value.toFixed(value >= 10 || index === 0 ? 0 : 1) + " " + units[index];
+      }
+
+      function formatDuration(hours) {
+        if (typeof hours !== "number" || !isFinite(hours) || hours < 0) {
+          return "--";
+        }
+        var totalMinutes = Math.round(hours * 60);
+        var hrs = Math.floor(totalMinutes / 60);
+        var mins = totalMinutes % 60;
+        if (hrs === 0) {
+          return mins + "m";
+        }
+        if (mins === 0) {
+          return hrs + "h";
+        }
+        return hrs + "h " + mins + "m";
       }
 
       function populateTemperatureSelect(options) {
@@ -1402,6 +1451,42 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           powerCurrent.textContent = typeof current === "number" ? current.toFixed(1) + " mA" : "--";
           powerConsumption.textContent = typeof power === "number" ? power.toFixed(0) + " mW" : "--";
           powerFlow.textContent = flow.charAt(0).toUpperCase() + flow.slice(1);
+          const battery = payload.battery || {};
+          var displaySoc = "--";
+          if (typeof battery.soc_pct === "number") {
+            displaySoc = battery.soc_pct.toFixed(1) + "%";
+          } else if (typeof battery.voltage_soc_pct === "number") {
+            displaySoc = battery.voltage_soc_pct.toFixed(1) + "%";
+          }
+          if (batterySoc) {
+            batterySoc.textContent = displaySoc;
+          }
+          if (batteryCapacity) {
+            if (typeof battery.capacity_mah === "number") {
+              batteryCapacity.textContent = battery.capacity_mah.toFixed(0) + " mAh";
+            } else {
+              batteryCapacity.textContent = "--";
+            }
+          }
+          var activeFlow = (battery.flow || flow || "unknown").toLowerCase();
+          if (batteryRuntime) {
+            if (activeFlow === "discharging" && typeof battery.time_to_empty_hours === "number") {
+              batteryRuntime.textContent = formatDuration(battery.time_to_empty_hours);
+            } else if (activeFlow === "discharging") {
+              batteryRuntime.textContent = "--";
+            } else {
+              batteryRuntime.textContent = "--";
+            }
+          }
+          if (batteryChargeTime) {
+            if (activeFlow === "charging" && typeof battery.time_to_full_hours === "number") {
+              batteryChargeTime.textContent = formatDuration(battery.time_to_full_hours);
+            } else if (activeFlow === "charging") {
+              batteryChargeTime.textContent = "--";
+            } else {
+              batteryChargeTime.textContent = "--";
+            }
+          }
           if (powerStatus) {
             powerStatus.textContent = "";
           }
@@ -1410,6 +1495,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           powerCurrent.textContent = "--";
           powerConsumption.textContent = "--";
           powerFlow.textContent = "--";
+          if (batterySoc) batterySoc.textContent = "--";
+          if (batteryRuntime) batteryRuntime.textContent = "--";
+          if (batteryChargeTime) batteryChargeTime.textContent = "--";
+          if (batteryCapacity) batteryCapacity.textContent = "--";
           if (powerStatus) {
             powerStatus.textContent = "Power data unavailable: " + error.message;
           }
@@ -1658,6 +1747,35 @@ def _aggregate_status(results: List[Dict[str, str]]) -> str:
         if score == highest:
             return status
     return HardwareStatus.OK.value
+
+
+def _serialize_battery_estimate(estimate, readings) -> Dict[str, object]:
+    return {
+        "soc_pct": round(estimate.soc_pct, 2),
+        "voltage_soc_pct": round(estimate.voltage_soc_pct, 2),
+        "coulomb_soc_pct": None if estimate.coulomb_soc_pct is None else round(estimate.coulomb_soc_pct, 2),
+        "time_to_empty_hours": estimate.time_to_empty_hours,
+        "time_to_full_hours": estimate.time_to_full_hours,
+        "capacity_mah": round(estimate.capacity_mah, 1),
+        "samples_recorded": int(estimate.samples_recorded),
+        "flow": readings.flow,
+    }
+
+
+def _battery_state(settings, readings):
+    try:
+        with BATTERY_LOCK:
+            estimate = BATTERY_ESTIMATOR.record_sample(
+                timestamp=time.time(),
+                voltage_v=readings.bus_voltage_v,
+                current_ma=readings.current_ma,
+                flow=readings.flow,
+                nominal_capacity_mah=settings.battery_capacity_mah,
+            )
+    except Exception as exc:  # pragma: no cover - best-effort path
+        logger.debug("Battery estimation unavailable: %s", exc)
+        return None
+    return _serialize_battery_estimate(estimate, readings)
 
 
 def _serialize_runtime_config(settings) -> Dict[str, Any]:
@@ -1999,13 +2117,17 @@ async def ups_status() -> Dict[str, object]:
         logger.error("UPS telemetry read failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     details = readings.to_dict()
+    battery = _battery_state(settings, readings)
     logger.info(
         "UPS telemetry read succeeded at address %s (bus=%sV current=%s)",
         details.get("address"),
         details.get("bus_voltage_v"),
         details.get("current_ma"),
     )
-    return {"status": HardwareStatus.OK.value, "readings": details}
+    payload: Dict[str, Any] = {"status": HardwareStatus.OK.value, "readings": details}
+    if battery is not None:
+        payload["battery"] = battery
+    return payload
 
 
 @router.get("/api/status/system")
